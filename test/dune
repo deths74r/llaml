@@ -1,0 +1,4 @@
+(tests
+ (names test_llaml)
+ (flags (:standard -w -32-26))
+ (libraries llaml alcotest str))

@@ -1,0 +1,203 @@
+(** Google Gemini REST API encode/decode. *)
+
+let member k j = Yojson.Safe.Util.member k j
+let to_string_opt j = try Some (Yojson.Safe.Util.to_string j) with _ -> None
+let to_int_opt j = try Some (Yojson.Safe.Util.to_int j) with _ -> None
+let to_list_opt j = try Some (Yojson.Safe.Util.to_list j) with _ -> None
+let to_float_opt j = try Some (Yojson.Safe.Util.to_float j) with _ -> None
+
+let make_error ?raw kind message : Types.error =
+  { kind; message; provider = "gemini"; raw }
+
+let encode_part = function
+  | Types.Text t ->
+    `Assoc [("text", `String t)]
+  | Types.Image { url; _ } ->
+    `Assoc [("fileData", `Assoc [("fileUri", `String url)])]
+  | Types.Tool_use { name; input; _ } ->
+    `Assoc [("functionCall", `Assoc [("name", `String name); ("args", input)])]
+  | Types.Tool_result { content; _ } ->
+    (match Yojson.Safe.from_string content with
+     | exception _ ->
+       `Assoc [("functionResponse", `Assoc [("response", `Assoc [("content", `String content)])])]
+     | json ->
+       `Assoc [("functionResponse", `Assoc [("response", json)])])
+
+let encode_message (msg : Types.message) =
+  let role_str = match msg.role with
+    | Types.User      -> "user"
+    | Types.Tool      -> "user"
+    | Types.Assistant -> "model"
+    | Types.System    -> "user"
+  in
+  let parts = List.map encode_part msg.content in
+  `Assoc [("role", `String role_str); ("parts", `List parts)]
+
+let encode_tool (t : Types.tool) =
+  `Assoc (
+    [("name", `String t.name);
+     ("parameters", t.schema)]
+    @ (match t.description with
+       | Some d -> [("description", `String d)]
+       | None   -> [])
+  )
+
+let encode_request (req : Types.request) =
+  let system = List.filter_map (fun (m : Types.message) ->
+    if m.role = Types.System then
+      match m.content with
+      | [Types.Text t] -> Some t
+      | parts ->
+        Some (String.concat "" (List.filter_map (function Types.Text t -> Some t | _ -> None) parts))
+    else None
+  ) req.messages in
+  let messages = List.filter (fun (m : Types.message) -> m.role <> Types.System) req.messages in
+  let contents = List.map encode_message messages in
+  let fields = ref [("contents", `List contents)] in
+  (match system with
+   | [] -> ()
+   | parts ->
+     fields := !fields @ [("system_instruction", `Assoc [("parts", `List [
+       `Assoc [("text", `String (String.concat "\n" parts))]
+     ])])]);
+  let gen_config = ref [] in
+  (match req.max_tokens with Some n -> gen_config := !gen_config @ [("maxOutputTokens", `Int n)] | None -> ());
+  (match req.temperature with Some f -> gen_config := !gen_config @ [("temperature", `Float f)] | None -> ());
+  (match req.top_p with Some f -> gen_config := !gen_config @ [("topP", `Float f)] | None -> ());
+  (if req.stop <> [] then
+    gen_config := !gen_config @ [("stopSequences", `List (List.map (fun s -> `String s) req.stop))]);
+  (if !gen_config <> [] then
+    fields := !fields @ [("generationConfig", `Assoc !gen_config)]);
+  (if req.tools <> [] then
+    fields := !fields @ [("tools", `List [`Assoc [("function_declarations", `List (List.map encode_tool req.tools))]])]);
+  let all_fields = !fields @ req.extra in
+  Ok (`Assoc all_fields)
+
+let decode_finish_reason = function
+  | "STOP"       -> Some Types.Stop
+  | "MAX_TOKENS" -> Some Types.Length
+  | _            -> None
+
+let decode_usage j : Types.usage =
+  let pt = to_int_opt (member "promptTokenCount" j) |> Option.value ~default:0 in
+  let ct = to_int_opt (member "candidatesTokenCount" j) |> Option.value ~default:0 in
+  let thoughts    = to_int_opt (member "thoughtsTokenCount" j) in
+  let cache_read  = to_int_opt (member "cachedContentTokenCount" j) in
+  let total = match to_int_opt (member "totalTokenCount" j) with
+    | Some n -> n
+    | None   -> pt + ct + Option.value thoughts ~default:0
+  in
+  {
+    prompt_tokens      = pt;
+    completion_tokens  = ct;
+    total_tokens       = total;
+    cache_read_tokens  = cache_read;
+    cache_write_tokens = None;
+    thinking_tokens    = thoughts;
+  }
+
+let decode_part j =
+  let text_j    = member "text" j in
+  let fn_call_j = member "functionCall" j in
+  match text_j with
+  | `String t when t <> "" ->
+    Some (Types.Text t)
+  | _ ->
+    (match fn_call_j with
+     | `Null -> None
+     | fc ->
+       let name  = member "name" fc |> to_string_opt |> Option.value ~default:"" in
+       let args  = member "args" fc in
+       Some (Types.Tool_use { id = name; name; input = args }))
+
+let decode_response j =
+  let usage      = match member "usageMetadata" j with
+    | `Null -> None
+    | u     -> Some (decode_usage u)
+  in
+  let candidates = to_list_opt (member "candidates" j) |> Option.value ~default:[] in
+  let choices    = List.mapi (fun i cand ->
+    let fr        = member "finishReason" cand |> to_string_opt |> (fun o -> Option.bind o decode_finish_reason) in
+    let content_j = member "content" cand in
+    let parts     = to_list_opt (member "parts" content_j) |> Option.value ~default:[] in
+    let content   = List.filter_map decode_part parts in
+    let tool_calls = List.filter_map (function
+      | Types.Tool_use { id; name; input } ->
+        Some { Types.id; name; arguments = Yojson.Safe.to_string input }
+      | _ -> None
+    ) content in
+    let message_content = List.filter (function Types.Tool_use _ -> false | _ -> true) content in
+    let message = { Types.role = Types.Assistant; content = message_content } in
+    { Types.index = i; message; tool_calls; finish_reason = fr }
+  ) candidates in
+  Ok { Types.id = ""; model = ""; choices; usage; created = 0 }
+
+let decode_error ~status j : Types.error =
+  let err = member "error" j in
+  let msg = match err with
+    | `Null -> to_string_opt j |> Option.value ~default:"Unknown error"
+    | e     -> member "message" e |> to_string_opt |> Option.value ~default:"Unknown error"
+  in
+  let kind : Types.error_kind = match status with
+    | 401 | 403       -> Types.Auth_error
+    | 404             -> Types.Not_found
+    | 429             -> Types.Rate_limit { retry_after = None }
+    | 400             -> Types.Invalid_request msg
+    | n when n >= 500 -> Types.Server_error n
+    | _               -> Types.Invalid_request msg
+  in
+  { kind; message = msg; provider = "gemini"; raw = Some j }
+
+(** Gemini streaming: each chunk is a full response object. *)
+let decode_chunk () (ev : Types.sse_event) =
+  let data = String.trim ev.data in
+  if data = "" then Ok None
+  else begin
+    match Yojson.Safe.from_string data with
+    | exception _ -> Error (make_error (Types.Invalid_request "Invalid JSON in stream") data)
+    | j ->
+      (match decode_response j with
+       | Error e -> Error e
+       | Ok resp ->
+         let usage = resp.Types.usage in
+         let (delta, fr) = match resp.Types.choices with
+           | [] ->
+             { Types.role = None; content = None; tool_calls = [] }, None
+           | c :: _ ->
+             let text = match c.Types.message.content with
+               | [Types.Text t] -> Some t
+               | _ -> None
+             in
+             let tc_deltas = List.map (fun (tc : Types.tool_call) ->
+               { Types.index = 0; id = Some tc.id; name = Some tc.name;
+                 arguments = Some tc.arguments }
+             ) c.Types.tool_calls in
+             { Types.role = Some Types.Assistant; content = text; tool_calls = tc_deltas },
+             c.Types.finish_reason
+         in
+         Ok (Some { Types.id = resp.Types.id; model = resp.Types.model; index = 0;
+                    delta; finish_reason = fr; usage }))
+  end
+
+let encode_embed_request (_req : Types.embed_request) =
+  Error { Types.kind = Types.Unsupported "batch embedding";
+          message = "Use single embed calls for Gemini";
+          provider = "gemini"; raw = None }
+
+let decode_embed_response j =
+  let embedding_j = member "embedding" j in
+  let values      = to_list_opt (member "values" embedding_j) |> Option.value ~default:[] in
+  let vector      = Array.of_list (List.filter_map to_float_opt values) in
+  Ok { Types.model = ""; data = [{ index = 0; vector }]; usage = None }
+
+let base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+
+let endpoint_for model ~streaming =
+  if streaming then
+    (* ?alt=sse makes Gemini emit proper SSE (data: {...} lines) instead of a JSON array *)
+    Uri.of_string (base_url ^ "/" ^ model ^ ":streamGenerateContent?alt=sse")
+  else
+    Uri.of_string (base_url ^ "/" ^ model ^ ":generateContent")
+
+let embed_endpoint model =
+  Uri.of_string (base_url ^ "/" ^ model ^ ":embedContent")

@@ -1,0 +1,287 @@
+(** Concrete provider implementations. *)
+
+(** {1 OpenAI} *)
+
+module Openai : Provider.S = struct
+  let id   = "openai"
+  let name = "OpenAI"
+
+  type decoder = unit
+  let make_decoder () = ()
+
+  let endpoint _req =
+    Uri.of_string "https://api.openai.com/v1/chat/completions"
+
+  let headers (auth : Auth.t) _req =
+    match auth with
+    | Auth.Api_key k -> [("Authorization", "Bearer " ^ k)]
+    | Auth.Custom hs -> hs
+    | _ -> []
+
+  let encode_request = Openai_codec.encode_request
+  let decode_response = Openai_codec.decode_response
+  let decode_chunk () ev = Openai_codec.decode_chunk () ev
+  let decode_error = Openai_codec.decode_error
+
+  let supports_streaming  = true
+  let binary_streaming    = false
+  let supports_tools      = true
+  let supports_vision     = true
+  let supports_embeddings = true
+
+  let encode_embed_request req =
+    Openai_codec.encode_embed_request req
+
+  let decode_embed_response = Openai_codec.decode_embed_response
+end
+
+(** {1 Anthropic} *)
+
+module Anthropic : Provider.S = struct
+  let id   = "anthropic"
+  let name = "Anthropic"
+
+  type decoder = Anthropic_codec.state
+  let make_decoder = Anthropic_codec.make_state
+
+  let endpoint _req =
+    Uri.of_string "https://api.anthropic.com/v1/messages"
+
+  let headers (auth : Auth.t) _req =
+    let base = [
+      ("anthropic-version", "2023-06-01");
+      ("content-type", "application/json");
+    ] in
+    match auth with
+    | Auth.Api_key k -> ("x-api-key", k) :: base
+    | Auth.Custom hs -> hs @ base
+    | _ -> base
+
+  let encode_request = Anthropic_codec.encode_request
+  let decode_response = Anthropic_codec.decode_response
+  let decode_chunk state ev = Anthropic_codec.decode_chunk state ev
+  let decode_error = Anthropic_codec.decode_error
+
+  let supports_streaming  = true
+  let binary_streaming    = false
+  let supports_tools      = true
+  let supports_vision     = true
+  let supports_embeddings = false
+
+  let encode_embed_request _req =
+    Error { Types.kind = Types.Unsupported "embeddings";
+            message = "Anthropic does not support embeddings";
+            provider = "anthropic"; raw = None }
+
+  let decode_embed_response _j =
+    Error { Types.kind = Types.Unsupported "embeddings";
+            message = "Anthropic does not support embeddings";
+            provider = "anthropic"; raw = None }
+end
+
+(** {1 Gemini} *)
+
+module Gemini : Provider.S = struct
+  let id   = "gemini"
+  let name = "Gemini"
+
+  type decoder = unit
+  let make_decoder () = ()
+
+  let endpoint (req : Types.request) =
+    Gemini_codec.endpoint_for req.model ~streaming:req.stream
+
+  let headers (auth : Auth.t) _req =
+    match auth with
+    | Auth.Api_key _ -> [("content-type", "application/json")]
+    | Auth.Custom hs -> hs
+    | _ -> [("content-type", "application/json")]
+
+  (** Gemini auth is via query param, not headers. We handle URL modification
+      in endpoint by adding the key. Since [endpoint] only receives the request
+      and not the auth, callers must add ?key=... themselves. This is handled
+      in Client by checking provider id. *)
+
+  let encode_request = Gemini_codec.encode_request
+  let decode_response = Gemini_codec.decode_response
+  let decode_chunk () ev = Gemini_codec.decode_chunk () ev
+  let decode_error = Gemini_codec.decode_error
+
+  let supports_streaming  = true
+  let binary_streaming    = false
+  let supports_tools      = true
+  let supports_vision     = true
+  let supports_embeddings = true
+
+  let encode_embed_request = Gemini_codec.encode_embed_request
+  let decode_embed_response = Gemini_codec.decode_embed_response
+end
+
+(** {1 Bedrock} *)
+
+module Bedrock : Provider.S = struct
+  let id   = "bedrock"
+  let name = "AWS Bedrock"
+
+  type decoder = Bedrock_codec.state
+  let make_decoder = Bedrock_codec.make_state
+
+  let endpoint req =
+    Bedrock_codec.endpoint req ~streaming:req.Types.stream
+
+  let headers (auth : Auth.t) req =
+    match auth with
+    | Auth.Aws_sigv4 creds ->
+      (* We need the body to sign, but we don't have it here.
+         The actual signing is done in Client with the encoded body.
+         Return minimal headers; Client will call sign with the body. *)
+      let _ = req in
+      let base = [("content-type", "application/json")] in
+      (* Store creds hint for client — client checks provider id and does signing *)
+      let _ = creds in
+      base
+    | Auth.Custom hs -> hs
+    | _ -> [("content-type", "application/json")]
+
+  let encode_request = Bedrock_codec.encode_request
+  let decode_response = Bedrock_codec.decode_response
+  let decode_chunk state ev = Bedrock_codec.decode_chunk state ev
+  let decode_error = Bedrock_codec.decode_error
+
+  let supports_streaming  = true
+  let binary_streaming    = true
+  let supports_tools      = true
+  let supports_vision     = false
+  let supports_embeddings = false
+
+  let encode_embed_request _req =
+    Error { Types.kind = Types.Unsupported "embeddings";
+            message = "Bedrock embeddings not yet implemented";
+            provider = "bedrock"; raw = None }
+
+  let decode_embed_response _j =
+    Error { Types.kind = Types.Unsupported "embeddings";
+            message = "Bedrock embeddings not yet implemented";
+            provider = "bedrock"; raw = None }
+end
+
+(** {1 Tier 2 — OpenAI-compatible} *)
+
+module Together = Provider.Make_openai_compat (struct
+  let id   = "together"
+  let name = "Together AI"
+  let base_url = "https://api.together.xyz/v1"
+  let supports_tools      = true
+  let supports_vision     = false
+  let supports_embeddings = true
+end)
+
+module Fireworks = Provider.Make_openai_compat (struct
+  let id   = "fireworks"
+  let name = "Fireworks AI"
+  let base_url = "https://api.fireworks.ai/inference/v1"
+  let supports_tools      = true
+  let supports_vision     = false
+  let supports_embeddings = false
+end)
+
+module Groq = Provider.Make_openai_compat (struct
+  let id   = "groq"
+  let name = "Groq"
+  let base_url = "https://api.groq.com/openai/v1"
+  let supports_tools      = true
+  let supports_vision     = false
+  let supports_embeddings = false
+end)
+
+module Deepseek = Provider.Make_openai_compat (struct
+  let id   = "deepseek"
+  let name = "DeepSeek"
+  let base_url = "https://api.deepseek.com/v1"
+  let supports_tools      = true
+  let supports_vision     = false
+  let supports_embeddings = false
+end)
+
+module Xai = Provider.Make_openai_compat (struct
+  let id   = "xai"
+  let name = "xAI (Grok)"
+  let base_url = "https://api.x.ai/v1"
+  let supports_tools      = true
+  let supports_vision     = true
+  let supports_embeddings = false
+end)
+
+module Cerebras = Provider.Make_openai_compat (struct
+  let id   = "cerebras"
+  let name = "Cerebras"
+  let base_url = "https://api.cerebras.ai/v1"
+  let supports_tools      = true
+  let supports_vision     = false
+  let supports_embeddings = false
+end)
+
+module Ollama = Provider.Make_openai_compat (struct
+  let id   = "ollama"
+  let name = "Ollama"
+  let base_url = "http://localhost:11434/v1"
+  let supports_tools      = true
+  let supports_vision     = true
+  let supports_embeddings = true
+end)
+
+module Openrouter = Provider.Make_openai_compat (struct
+  let id   = "openrouter"
+  let name = "OpenRouter"
+  let base_url = "https://openrouter.ai/api/v1"
+  let supports_tools      = true
+  let supports_vision     = true
+  let supports_embeddings = false
+end)
+
+module Mistral = Provider.Make_openai_compat (struct
+  let id   = "mistral"
+  let name = "Mistral AI"
+  let base_url = "https://api.mistral.ai/v1"
+  let supports_tools      = true
+  let supports_vision     = true
+  let supports_embeddings = true
+end)
+
+(** {1 Prefix lookup table} *)
+
+let by_prefix model =
+  let has_prefix p = String.length model >= String.length p &&
+    String.sub model 0 (String.length p) = p in
+  (* Bedrock prefixes — check before others *)
+  if has_prefix "us." || has_prefix "eu." || has_prefix "ap."
+  || has_prefix "amazon." || has_prefix "anthropic."
+  || has_prefix "meta." || has_prefix "mistral.amazonaws"
+  then Some (module Bedrock : Provider.S)
+  (* Tier 1 *)
+  else if has_prefix "gpt-" || has_prefix "o1" || has_prefix "o3" || has_prefix "o4"
+  then Some (module Openai : Provider.S)
+  else if has_prefix "claude-"
+  then Some (module Anthropic : Provider.S)
+  else if has_prefix "gemini-"
+  then Some (module Gemini : Provider.S)
+  (* Tier 2 *)
+  else if has_prefix "together/"
+  then Some (module Together : Provider.S)
+  else if has_prefix "fireworks/" || has_prefix "accounts/fireworks"
+  then Some (module Fireworks : Provider.S)
+  else if has_prefix "groq/"
+  then Some (module Groq : Provider.S)
+  else if has_prefix "deepseek-" || has_prefix "deepseek/"
+  then Some (module Deepseek : Provider.S)
+  else if has_prefix "grok-" || has_prefix "xai/"
+  then Some (module Xai : Provider.S)
+  else if has_prefix "cerebras/"
+  then Some (module Cerebras : Provider.S)
+  else if has_prefix "ollama/"
+  then Some (module Ollama : Provider.S)
+  else if has_prefix "openrouter/"
+  then Some (module Openrouter : Provider.S)
+  else if has_prefix "mistral-" || has_prefix "mistral/"
+  then Some (module Mistral : Provider.S)
+  else None

@@ -1,0 +1,3 @@
+(executables
+ (names gemini_chat gemini_modes)
+ (libraries llaml eio_main cohttp-eio cohttp uri tls-eio ca-certs mirage-crypto-rng.unix))

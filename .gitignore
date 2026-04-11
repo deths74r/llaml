@@ -1,0 +1,9 @@
+
+# Sift agent memory (per-project database)
+.sift/
+
+# Dune build artifacts
+_build/
+
+# Local SQLite databases
+litellm.db
