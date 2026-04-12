@@ -643,6 +643,34 @@ let test_anthropic_cache_control_system_message () =
 (* top_k / seed / response_format — B3 *)
 (* ------------------------------------------------------------------ *)
 
+let test_gemini_tool_name_sanitization () =
+  (* LMI tool names use ':' as a namespace separator. Gemini
+     rejects function names that aren't [a-zA-Z0-9_-], so the
+     codec should rewrite ':' to '_' on the wire. Schemas
+     without a [properties] key should also get one injected. *)
+  let tool : Llaml.Types.tool = {
+    name = "core:memory_get";
+    description = Some "Fetch a memory by id";
+    schema = `Assoc [("type", `String "object")];
+  } in
+  let req =
+    Llaml.Types.request
+      ~model:"gemini-2.5-flash"
+      ~messages:[]
+      ~tools:[tool]
+      ()
+  in
+  match Llaml.Gemini_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "colon replaced" true
+      (contains "core_memory_get" s);
+    Alcotest.(check bool) "no raw colon in name" false
+      (contains "core:memory_get" s);
+    Alcotest.(check bool) "properties injected" true
+      (contains "\"properties\"" s)
+
 let test_gemini_top_k_and_seed () =
   let req =
     Llaml.Types.request
@@ -756,5 +784,6 @@ let () =
       Alcotest.test_case "gemini top_k and seed" `Quick test_gemini_top_k_and_seed;
       Alcotest.test_case "anthropic top_k" `Quick test_anthropic_top_k;
       Alcotest.test_case "openai response_format json_object" `Quick test_openai_response_format_json_object;
+      Alcotest.test_case "gemini tool name sanitization" `Quick test_gemini_tool_name_sanitization;
     ];
   ]

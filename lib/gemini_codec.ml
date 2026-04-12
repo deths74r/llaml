@@ -33,10 +33,28 @@ let encode_message (msg : Types.message) =
   let parts = List.map encode_part msg.content in
   `Assoc [("role", `String role_str); ("parts", `List parts)]
 
+(** Gemini function names must match [a-zA-Z0-9_-]. Callers
+    that namespace their tools with ':' (e.g. [core:memory_get])
+    would be silently dropped from the function-call list.
+    Replace ':' with '_' on the wire; the receiver can invert
+    the mapping if it tracks a prefix whitelist. *)
+let sanitize_tool_name (s : string) : string =
+  String.map (fun c -> if c = ':' then '_' else c) s
+
+(** Gemini rejects parameter schemas of shape [{"type":"object"}]
+    that omit [properties]. Inject an empty object so the
+    request validates. *)
+let normalize_parameters (schema : Yojson.Safe.t) : Yojson.Safe.t =
+  match schema with
+  | `Assoc fields ->
+    if List.mem_assoc "properties" fields then schema
+    else `Assoc (fields @ [("properties", `Assoc [])])
+  | other -> other
+
 let encode_tool (t : Types.tool) =
   `Assoc (
-    [("name", `String t.name);
-     ("parameters", t.schema)]
+    [("name", `String (sanitize_tool_name t.name));
+     ("parameters", normalize_parameters t.schema)]
     @ (match t.description with
        | Some d -> [("description", `String d)]
        | None   -> [])
