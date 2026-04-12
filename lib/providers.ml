@@ -285,3 +285,76 @@ let by_prefix model =
   else if has_prefix "mistral-" || has_prefix "mistral/"
   then Some (module Mistral : Provider.S)
   else None
+
+(** {1 Curated model catalog}
+
+    Hand-maintained list of known models per provider. The
+    ordering inside each provider is roughly newest-first so a
+    downstream [/model] listing puts the fresh models near the
+    top. This is NOT an exhaustive enumeration — new models
+    appear faster than we can update — and it is NOT validated
+    against the provider's [/models] endpoint. It exists so a
+    REPL tab-completion UI has something sensible to autocomplete
+    against without a live API call at startup. *)
+
+let catalog : (string * string) list = [
+  (* OpenAI *)
+  "gpt-5",                         "openai";
+  "gpt-5-mini",                    "openai";
+  "gpt-5-nano",                    "openai";
+  "gpt-4.1",                       "openai";
+  "gpt-4o",                        "openai";
+  "gpt-4o-mini",                   "openai";
+  "o3",                            "openai";
+  "o3-mini",                       "openai";
+  "o4-mini",                       "openai";
+
+  (* Anthropic *)
+  "claude-opus-4-6",               "anthropic";
+  "claude-opus-4-5",               "anthropic";
+  "claude-sonnet-4-6",             "anthropic";
+  "claude-sonnet-4-5",             "anthropic";
+  "claude-haiku-4-5",              "anthropic";
+  "claude-3-5-sonnet-latest",      "anthropic";
+  "claude-3-5-haiku-latest",       "anthropic";
+
+  (* Gemini *)
+  "gemini-3-pro-preview",          "gemini";
+  "gemini-2.5-pro",                "gemini";
+  "gemini-2.5-flash",              "gemini";
+  "gemini-2.5-flash-lite",         "gemini";
+
+  (* Groq *)
+  "groq/llama-3.3-70b-versatile",  "groq";
+  "groq/llama-3.1-8b-instant",     "groq";
+  "groq/mixtral-8x7b-32768",       "groq";
+
+  (* xAI *)
+  "grok-4",                        "xai";
+  "grok-3",                        "xai";
+
+  (* DeepSeek *)
+  "deepseek-chat",                 "deepseek";
+  "deepseek-reasoner",             "deepseek";
+
+  (* Mistral *)
+  "mistral-large-latest",          "mistral";
+  "mistral-small-latest",          "mistral";
+
+  (* Cerebras *)
+  "cerebras/llama-3.3-70b",        "cerebras";
+
+  (* Together *)
+  "together/meta-llama/Llama-3.3-70B-Instruct-Turbo", "together";
+
+  (* Fireworks *)
+  "fireworks/llama-v3p3-70b-instruct", "fireworks";
+
+  (* OpenRouter *)
+  "openrouter/anthropic/claude-sonnet-4-5", "openrouter";
+  "openrouter/openai/gpt-5",                 "openrouter";
+
+  (* Ollama (local) *)
+  "ollama/llama3.3",               "ollama";
+  "ollama/qwen2.5-coder",          "ollama";
+]

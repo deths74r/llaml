@@ -44,3 +44,12 @@ val by_prefix : string -> (module Provider.S) option
     [by_prefix "gemini-2.0"]     → [Some (module Gemini)]
     [by_prefix "together/"]      → [Some (module Together)]
     Returns [None] for unrecognized prefixes. *)
+
+val catalog : (string * string) list
+(** Curated catalog of known [(model_name, provider_id)] pairs.
+    Ordered roughly newest-first per provider so a tab-completion
+    or [/model] listing UI puts fresh models near the top. NOT
+    authoritative — providers ship new models faster than we can
+    update — but good enough for autocomplete defaults. Downstream
+    consumers that want a live list should hit the provider's own
+    [/models] endpoint. *)
