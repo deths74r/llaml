@@ -148,6 +148,8 @@ let encode_request (req : Types.request) =
 let decode_finish_reason = function
   | "STOP"       -> Some Types.Stop
   | "MAX_TOKENS" -> Some Types.Length
+  | "SAFETY" | "RECITATION" | "BLOCKLIST"
+  | "OTHER" | "PROHIBITED_CONTENT" -> Some Types.Content_filter
   | _            -> None
 
 let decode_usage j : Types.usage =
