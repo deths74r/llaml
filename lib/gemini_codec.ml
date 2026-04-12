@@ -9,30 +9,6 @@ let to_float_opt j = try Some (Yojson.Safe.Util.to_float j) with _ -> None
 let make_error ?raw kind message : Types.error =
   { kind; message; provider = "gemini"; raw }
 
-let encode_part = function
-  | Types.Text t ->
-    `Assoc [("text", `String t)]
-  | Types.Image { url; _ } ->
-    `Assoc [("fileData", `Assoc [("fileUri", `String url)])]
-  | Types.Tool_use { name; input; _ } ->
-    `Assoc [("functionCall", `Assoc [("name", `String name); ("args", input)])]
-  | Types.Tool_result { content; _ } ->
-    (match Yojson.Safe.from_string content with
-     | exception _ ->
-       `Assoc [("functionResponse", `Assoc [("response", `Assoc [("content", `String content)])])]
-     | json ->
-       `Assoc [("functionResponse", `Assoc [("response", json)])])
-
-let encode_message (msg : Types.message) =
-  let role_str = match msg.role with
-    | Types.User      -> "user"
-    | Types.Tool      -> "user"
-    | Types.Assistant -> "model"
-    | Types.System    -> "user"
-  in
-  let parts = List.map encode_part msg.content in
-  `Assoc [("role", `String role_str); ("parts", `List parts)]
-
 (** Gemini function names must match [a-zA-Z0-9_-]. Callers
     that namespace their tools with ':' (e.g. [core:memory_get])
     would be silently dropped from the function-call list.
@@ -50,6 +26,45 @@ let normalize_parameters (schema : Yojson.Safe.t) : Yojson.Safe.t =
     if List.mem_assoc "properties" fields then schema
     else `Assoc (fields @ [("properties", `Assoc [])])
   | other -> other
+
+let encode_part = function
+  | Types.Text t ->
+    `Assoc [("text", `String t)]
+  | Types.Image { url; _ } ->
+    `Assoc [("fileData", `Assoc [("fileUri", `String url)])]
+  | Types.Tool_use { name; input; _ } ->
+    `Assoc [("functionCall", `Assoc [
+      ("name", `String (sanitize_tool_name name));
+      ("args", input);
+    ])]
+  | Types.Tool_result { id; content; _ } ->
+    (* Gemini requires [functionResponse.name] to match the
+       [functionCall.name] in the earlier turn — that's how
+       it correlates results with calls (it has no opaque
+       tool_use ids). Callers should put the same sanitized
+       tool name in [Tool_result.id]. *)
+    let name = sanitize_tool_name id in
+    (match Yojson.Safe.from_string content with
+     | exception _ ->
+       `Assoc [("functionResponse", `Assoc [
+         ("name", `String name);
+         ("response", `Assoc [("content", `String content)]);
+       ])]
+     | json ->
+       `Assoc [("functionResponse", `Assoc [
+         ("name", `String name);
+         ("response", json);
+       ])])
+
+let encode_message (msg : Types.message) =
+  let role_str = match msg.role with
+    | Types.User      -> "user"
+    | Types.Tool      -> "user"
+    | Types.Assistant -> "model"
+    | Types.System    -> "user"
+  in
+  let parts = List.map encode_part msg.content in
+  `Assoc [("role", `String role_str); ("parts", `List parts)]
 
 let encode_tool (t : Types.tool) =
   `Assoc (
