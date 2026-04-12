@@ -1,0 +1,13 @@
+(library
+ (name llaml_eio)
+ (flags (:standard -w -67-16-69-26))
+ (libraries
+  llaml
+  eio
+  eio_main
+  cohttp-eio
+  cohttp
+  tls-eio
+  ca-certs
+  domain-name
+  mirage-crypto-rng.unix))

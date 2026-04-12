@@ -70,7 +70,7 @@ let encode_request (req : Types.request) =
     fields := !fields @ [("inferenceConfig", `Assoc !inf_config)]);
   (if req.tools <> [] then
     fields := !fields @ [("toolConfig", `Assoc [("tools", `List (List.map encode_tool req.tools))])]);
-  let all_fields = !fields @ req.extra in
+  let all_fields = Json_merge.merge !fields req.extra in
   Ok (`Assoc all_fields)
 
 let decode_finish_reason = function
@@ -122,7 +122,9 @@ let decode_response j =
     | _ -> None
   ) content in
   let message_content = List.filter (function Types.Tool_use _ -> false | _ -> true) content in
-  let message = { Types.role = Types.Assistant; content = message_content } in
+  let message : Types.message = {
+    role = Types.Assistant; content = message_content; cache = None
+  } in
   let choice  = { Types.index = 0; message; tool_calls; finish_reason = fr } in
   Ok { Types.id = ""; model = ""; choices = [choice]; usage; created = 0 }
 

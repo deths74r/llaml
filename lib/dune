@@ -2,4 +2,4 @@
  (name llaml)
  (ocamlopt_flags (:standard -O2))
  (flags (:standard -w -67-16-69-26))
- (libraries yojson eio eio_main cohttp-eio cohttp uri digestif base64 str unix))
+ (libraries yojson uri digestif base64 str unix))

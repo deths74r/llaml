@@ -10,13 +10,12 @@
 
 (** {1 HTTP backend abstraction}
 
-    Inject your HTTP implementation here.  The default build uses Cohttp + Eio.
-    Tests can inject a mock that returns canned responses. *)
+    Inject your HTTP implementation here. The canonical eio+cohttp backend
+    lives in the [llaml.eio] sub-library as [Llaml_eio.Http_eio]; tests can
+    inject a mock that returns canned responses. *)
 
 module type Http = sig
   type t
-
-  val create : unit -> t
 
   val post :
     t ->
@@ -46,6 +45,12 @@ module type Http = sig
   (** Like [post_stream] but delivers raw byte chunks instead of lines.
       Same status-handling contract: [on_data] is only called on 2xx;
       on >=400 the buffered error body is returned in [Ok (status, body)]. *)
+
+  val sleep : t -> float -> unit
+  (** Fiber-friendly sleep. Called by [Client.Make]'s retry logic on
+      [Rate_limit] / [Server_error]. The eio backend routes this to
+      [Eio.Time.sleep] so it yields to other fibers; a naive backend
+      may use [Unix.sleepf]. *)
 end
 
 (** {1 Client functor} *)

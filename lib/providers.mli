@@ -2,11 +2,17 @@
 
     Each is a [Provider.S] implementation ready to pass to [Client.Make].
 
-    {[
-      module OAI = Client.Make (Providers.Openai) (Cohttp_eio_http)
+    Typical usage goes through the {!Llaml_eio.make} convenience
+    constructor rather than instantiating the [Client.Make] functor directly:
 
-      let client = OAI.create ~auth:(Auth.Api_key (Sys.getenv "OPENAI_API_KEY")) http
-      let resp   = OAI.complete client req
+    {[
+      let client =
+        Llaml_eio.make ~env ~sw
+          ~provider:(module Llaml.Providers.Openai)
+          ~auth:(Llaml.Auth.Api_key (Sys.getenv "OPENAI_API_KEY"))
+          ()
+      in
+      client.complete req
     ]}
 *)
 

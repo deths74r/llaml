@@ -49,6 +49,15 @@ let encode_content_block = function
       ("is_error", `Bool is_error)
     ]
 
+let attach_cache_control (block : Yojson.Safe.t) : Yojson.Safe.t =
+  match block with
+  | `Assoc fields ->
+    `Assoc
+      (fields
+       @ [("cache_control",
+           `Assoc [("type", `String "ephemeral")])])
+  | other -> other
+
 let encode_message (msg : Types.message) =
   let role_str = match msg.role with
     | Types.User      -> "user"
@@ -56,9 +65,25 @@ let encode_message (msg : Types.message) =
     | Types.Assistant -> "assistant"
     | Types.System    -> "user"
   in
-  let content = match msg.content with
-    | [Types.Text t] -> `String t
-    | parts -> `List (List.map encode_content_block parts)
+  let content =
+    match msg.content, msg.cache with
+    | [Types.Text t], None ->
+      (* Fast path: single text block with no cache marker. *)
+      `String t
+    | parts, cache ->
+      let blocks = List.map encode_content_block parts in
+      let blocks =
+        match cache with
+        | None -> blocks
+        | Some Types.Ephemeral ->
+          (* Tag the LAST block — Anthropic caches everything
+             up to and including the tagged block. *)
+          (match List.rev blocks with
+           | [] -> []
+           | last :: rest ->
+             List.rev (attach_cache_control last :: rest))
+      in
+      `List blocks
   in
   `Assoc [("role", `String role_str); ("content", content)]
 
@@ -78,14 +103,20 @@ let encode_tool_choice = function
   | Types.Tool name -> `Assoc [("type", `String "tool"); ("name", `String name)]
 
 let encode_request (req : Types.request) =
-  let system = List.filter_map (fun (m : Types.message) ->
-    if m.role = Types.System then
-      match m.content with
-      | [Types.Text t] -> Some t
-      | parts ->
-        Some (String.concat "" (List.filter_map (function Types.Text t -> Some t | _ -> None) parts))
-    else None
-  ) req.messages in
+  (* System messages are pulled out of the messages array and
+     emitted as a top-level [system] field. If any of them
+     carries [cache = Some Ephemeral] we emit the list-of-blocks
+     form so cache_control can ride on the final block. *)
+  let system_msgs =
+    List.filter
+      (fun (m : Types.message) -> m.role = Types.System)
+      req.messages
+  in
+  let any_cache =
+    List.exists
+      (fun (m : Types.message) -> m.cache = Some Types.Ephemeral)
+      system_msgs
+  in
   let messages = List.filter (fun (m : Types.message) -> m.role <> Types.System) req.messages in
   let messages_json = List.map encode_message messages in
   let fields = ref [
@@ -93,11 +124,45 @@ let encode_request (req : Types.request) =
     ("messages", `List messages_json);
     ("max_tokens", `Int (Option.value req.max_tokens ~default:4096));
   ] in
-  (match system with
-   | []    -> ()
-   | parts -> fields := !fields @ [("system", `String (String.concat "\n" parts))]);
+  (match system_msgs with
+   | [] -> ()
+   | _ when not any_cache ->
+     let parts =
+       List.concat_map
+         (fun (m : Types.message) ->
+            List.filter_map
+              (function Types.Text t -> Some t | _ -> None)
+              m.content)
+         system_msgs
+     in
+     fields := !fields @ [("system", `String (String.concat "\n" parts))]
+   | _ ->
+     (* Emit as a list of text blocks; tag the last block of
+        each message that had [cache = Some Ephemeral]. *)
+     let blocks =
+       List.concat_map
+         (fun (m : Types.message) ->
+            let texts =
+              List.filter_map
+                (function Types.Text t -> Some t | _ -> None)
+                m.content
+            in
+            let json_blocks =
+              List.map
+                (fun t ->
+                   `Assoc [("type", `String "text"); ("text", `String t)])
+                texts
+            in
+            match m.cache, List.rev json_blocks with
+            | Some Types.Ephemeral, last :: rest ->
+              List.rev (attach_cache_control last :: rest)
+            | _ -> json_blocks)
+         system_msgs
+     in
+     fields := !fields @ [("system", `List blocks)]);
   (match req.temperature with Some f -> fields := !fields @ [("temperature", `Float f)] | None -> ());
   (match req.top_p with Some f -> fields := !fields @ [("top_p", `Float f)] | None -> ());
+  (match req.top_k with Some n -> fields := !fields @ [("top_k", `Int n)] | None -> ());
   (if req.stop <> [] then
     fields := !fields @ [("stop_sequences", `List (List.map (fun s -> `String s) req.stop))]);
   (if req.stream then fields := !fields @ [("stream", `Bool true)]);
@@ -105,7 +170,27 @@ let encode_request (req : Types.request) =
     fields := !fields @ [("tools", `List (List.map encode_tool req.tools))];
     fields := !fields @ [("tool_choice", encode_tool_choice req.tool_choice)]
   end);
-  let all_fields = !fields @ req.extra in
+  (* Reasoning -> top-level [thinking] block. Anthropic takes an
+     explicit token budget; the effort enum maps to budget defaults. *)
+  (match req.reasoning with
+   | None -> ()
+   | Some r ->
+     let budget =
+       match r with
+       | Minimal   -> 1024   (* Anthropic minimum is 1024 *)
+       | Low       -> 1024
+       | Medium    -> 4096
+       | High      -> 16384
+       | Budget n  -> n
+       | Dynamic   -> 4096   (* no dynamic on Anthropic; use Medium default *)
+     in
+     fields := !fields @ [
+       ("thinking", `Assoc [
+         ("type", `String "enabled");
+         ("budget_tokens", `Int budget);
+       ])
+     ]);
+  let all_fields = Json_merge.merge !fields req.extra in
   Ok (`Assoc all_fields)
 
 let decode_finish_reason = function
@@ -156,7 +241,9 @@ let decode_response j =
     | _ -> None
   ) all_content in
   let message_content = List.filter (function Types.Tool_use _ -> false | _ -> true) all_content in
-  let message = { Types.role = Types.Assistant; content = message_content } in
+  let message : Types.message = {
+    role = Types.Assistant; content = message_content; cache = None
+  } in
   let choice  = { Types.index = 0; message; tool_calls; finish_reason = fr } in
   Ok { Types.id; model; choices = [choice]; usage; created = 0 }
 

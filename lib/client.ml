@@ -2,7 +2,6 @@
 
 module type Http = sig
   type t
-  val create : unit -> t
   val post :
     t -> url:Uri.t -> headers:(string * string) list -> body:string ->
     (int * string * (string * string) list, string) result
@@ -12,6 +11,7 @@ module type Http = sig
   val post_stream_raw :
     t -> url:Uri.t -> headers:(string * string) list -> body:string ->
     on_data:(string -> unit) -> (int * string, string) result
+  val sleep : t -> float -> unit
 end
 
 module Make (P : Provider.S) (H : Http) = struct
@@ -62,17 +62,52 @@ module Make (P : Provider.S) (H : Http) = struct
   let make_error kind message =
     { Types.kind; message; provider = P.id; raw = None }
 
-  (** Retry logic: exponential backoff with Retry-After header support. *)
-  let with_retry max_retries f =
+  (** Parse a [Retry-After] header, accepting either seconds
+      (the common case) or an HTTP-date (rare — we ignore that
+      form and treat it as absent). *)
+  let parse_retry_after (headers : (string * string) list) : float option =
+    let lc k = String.lowercase_ascii k in
+    List.find_map
+      (fun (k, v) ->
+         if lc k = "retry-after" then
+           try Some (float_of_string (String.trim v))
+           with _ -> None
+         else None)
+      headers
+
+  (** If [err] is a [Rate_limit] with no [retry_after] hint,
+      fill it in from the response headers. Leaves other error
+      kinds untouched. *)
+  let enrich_rate_limit (err : Types.error)
+      (resp_headers : (string * string) list) : Types.error =
+    match err.Types.kind with
+    | Types.Rate_limit { retry_after = None } ->
+      (match parse_retry_after resp_headers with
+       | None -> err
+       | Some hint ->
+         { err with
+           Types.kind = Types.Rate_limit { retry_after = Some hint } })
+    | _ -> err
+
+  (** Retry logic: exponential backoff with Retry-After header support.
+      Uses [H.sleep] on the HTTP backend so eio fibers yield instead of
+      blocking the domain with [Unix.sleepf]. *)
+  let with_retry http max_retries f =
     let rec loop attempt =
       match f () with
       | Ok v -> Ok v
-      | Error ({ Types.kind = Types.Rate_limit _; _ } as e) when attempt < max_retries ->
-        (* Simple backoff: 1s, 2s, 4s *)
-        Unix.sleepf (Float.of_int (1 lsl attempt));
+      | Error ({ Types.kind = Types.Rate_limit { retry_after }; _ } as _e)
+        when attempt < max_retries ->
+        let backoff = Float.of_int (1 lsl attempt) in
+        let delay = match retry_after with
+          | Some hint -> Float.max hint backoff
+          | None      -> backoff
+        in
+        H.sleep http delay;
         loop (attempt + 1)
-      | Error ({ Types.kind = Types.Server_error _; _ } as e) when attempt < max_retries ->
-        Unix.sleepf (Float.of_int (1 lsl attempt));
+      | Error ({ Types.kind = Types.Server_error _; _ } as _e)
+        when attempt < max_retries ->
+        H.sleep http (Float.of_int (1 lsl attempt));
         loop (attempt + 1)
       | Error e -> Error e
     in
@@ -87,7 +122,7 @@ module Make (P : Provider.S) (H : Http) = struct
       | None -> P.endpoint req
     in
     let url = maybe_add_api_key_param t.auth url in
-    with_retry t.max_retries (fun () ->
+    with_retry t.http t.max_retries (fun () ->
       match P.encode_request req with
       | Error e -> Error e
       | Ok body_json ->
@@ -100,19 +135,31 @@ module Make (P : Provider.S) (H : Http) = struct
         in
         match H.post t.http ~url ~headers ~body with
         | Error msg -> Error (make_error (Types.Network_error msg) msg)
-        | Ok (status, resp_body, _resp_headers) ->
+        | Ok (status, resp_body, resp_headers) ->
           if status >= 400 then begin
             let raw = (match Yojson.Safe.from_string resp_body with
               | j -> Some j
               | exception _ -> None)
             in
             let err_json = Option.value raw ~default:(`String resp_body) in
-            Error (P.decode_error ~status err_json)
+            let err = P.decode_error ~status err_json in
+            Error (enrich_rate_limit err resp_headers)
           end else begin
             match Yojson.Safe.from_string resp_body with
             | exception _ ->
               Error (make_error (Types.Invalid_request "Invalid JSON response") resp_body)
-            | j -> P.decode_response j
+            | j ->
+              (* C5: backfill empty model field with the request's
+                 model — Gemini and some others don't echo it. *)
+              (match P.decode_response j with
+               | Error e -> Error e
+               | Ok r ->
+                 let r =
+                   if r.Types.model = "" then
+                     { r with Types.model = req.model }
+                   else r
+                 in
+                 Ok r)
           end
     )
 
@@ -232,7 +279,7 @@ module Make (P : Provider.S) (H : Http) = struct
           Uri.with_path base "/v1/embeddings"
       in
       let url = maybe_add_api_key_param t.auth url in
-      with_retry t.max_retries (fun () ->
+      with_retry t.http t.max_retries (fun () ->
         match P.encode_embed_request req with
         | Error e -> Error e
         | Ok body_json ->
@@ -263,121 +310,13 @@ module Make (P : Provider.S) (H : Http) = struct
 
 end
 
-(** Default cohttp-eio HTTP backend.
+(* The default Eio+Cohttp HTTP backend lives in the
+   [llaml.eio] sub-library as [Llaml_eio.Http_eio]. Callers
+   that want the canonical wiring should use [Llaml_eio.make]
+   rather than instantiating [Client.Make] by hand.
 
-    Note: cohttp-eio requires an Eio environment to be set up by the caller.
-    This implementation uses a simple approach compatible with cohttp-eio 0.7+.
-    If the exact API differs, users can provide their own Http module. *)
-module Cohttp_eio_http : Http = struct
-  type t = unit
-
-  let create () = ()
-
-  let make_headers pairs =
-    List.fold_left (fun acc (k, v) ->
-      Cohttp.Header.add acc k v
-    ) (Cohttp.Header.init ()) pairs
-
-  let post () ~url ~headers ~body =
-    (* cohttp-eio requires running inside an Eio.Switch and Eio environment.
-       This is a best-effort wrapper — callers must ensure Eio is running.
-       We use a simple approach with Eio_main if available. *)
-    try
-      let result = ref (Error "not started") in
-      Eio_main.run (fun env ->
-        Eio.Switch.run (fun sw ->
-          let client = Cohttp_eio.Client.make ~https:None env#net in
-          let cohttp_headers = make_headers headers in
-          let body_src = Cohttp_eio.Body.of_string body in
-          let resp, resp_body = Cohttp_eio.Client.post client
-            ~sw
-            ~headers:cohttp_headers
-            ~body:body_src
-            url
-          in
-          let status = Cohttp.Response.status resp |> Cohttp.Code.code_of_status in
-          let resp_headers = Cohttp.Response.headers resp
-            |> Cohttp.Header.to_list in
-          let body_str = Eio.Buf_read.(parse_exn take_all) resp_body ~max_size:max_int in
-          result := Ok (status, body_str, resp_headers)
-        )
-      );
-      !result
-    with exn ->
-      Error (Printexc.to_string exn)
-
-  let post_stream () ~url ~headers ~body ~on_line =
-    try
-      let error_ref = ref None in
-      let status_ref = ref 0 in
-      let err_body_ref = ref "" in
-      Eio_main.run (fun env ->
-        Eio.Switch.run (fun sw ->
-          let client = Cohttp_eio.Client.make ~https:None env#net in
-          let cohttp_headers = make_headers headers in
-          let body_src = Cohttp_eio.Body.of_string body in
-          let resp, resp_body = Cohttp_eio.Client.post client
-            ~sw
-            ~headers:cohttp_headers
-            ~body:body_src
-            url
-          in
-          let status = Cohttp.Response.status resp |> Cohttp.Code.code_of_status in
-          status_ref := status;
-          if status >= 400 then
-            (try err_body_ref := Eio.Buf_read.(parse_exn take_all) resp_body ~max_size:max_int
-             with exn -> error_ref := Some (Printexc.to_string exn))
-          else begin
-            let buf_reader = Eio.Buf_read.of_flow resp_body ~max_size:max_int in
-            (try
-              while true do
-                let line = Eio.Buf_read.line buf_reader in
-                on_line line
-              done
-            with
-            | End_of_file -> ()
-            | exn -> error_ref := Some (Printexc.to_string exn))
-          end
-        )
-      );
-      match !error_ref with
-      | Some msg -> Error msg
-      | None -> Ok (!status_ref, !err_body_ref)
-    with exn ->
-      Error (Printexc.to_string exn)
-
-  let post_stream_raw () ~url ~headers ~body ~on_data =
-    try
-      let error_ref = ref None in
-      let status_ref = ref 0 in
-      let err_body_ref = ref "" in
-      Eio_main.run (fun env ->
-        Eio.Switch.run (fun sw ->
-          let client = Cohttp_eio.Client.make ~https:None env#net in
-          let cohttp_headers = make_headers headers in
-          let body_src = Cohttp_eio.Body.of_string body in
-          let resp, resp_body = Cohttp_eio.Client.post client
-            ~sw ~headers:cohttp_headers ~body:body_src url
-          in
-          let status = Cohttp.Response.status resp |> Cohttp.Code.code_of_status in
-          status_ref := status;
-          if status >= 400 then
-            (try err_body_ref := Eio.Buf_read.(parse_exn take_all) resp_body ~max_size:max_int
-             with exn -> error_ref := Some (Printexc.to_string exn))
-          else begin
-            let buf_reader = Eio.Buf_read.of_flow resp_body ~max_size:max_int in
-            (try
-              let all_data = Eio.Buf_read.take_all buf_reader in
-              if String.length all_data > 0 then on_data all_data
-            with
-            | End_of_file -> ()
-            | exn -> error_ref := Some (Printexc.to_string exn))
-          end
-        )
-      );
-      match !error_ref with
-      | Some msg -> Error msg
-      | None -> Ok (!status_ref, !err_body_ref)
-    with exn ->
-      Error (Printexc.to_string exn)
-end
+   Keeping the core [llaml] library dep-light
+   (yojson + uri + digestif + base64 + str + unix) means
+   consumers who already ship their own HTTP backend — or
+   only want the codecs for offline testing — don't pay the
+   eio + cohttp-eio + tls-eio + ca-certs footprint. *)

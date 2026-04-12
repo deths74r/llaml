@@ -17,12 +17,37 @@ type content =
   | Tool_use    of { id : string; name : string; input : Yojson.Safe.t }
   | Tool_result of { id : string; content : string; is_error : bool }
 
+(** Cache policy for a message.
+
+    Only Anthropic honors this — its codec attaches a
+    [cache_control: {type: "ephemeral"}] tag to the last
+    content block of the message, telling the server to
+    cache everything up to and including that block. Other
+    providers ignore the field entirely.
+
+    Put [`Ephemeral] on the last stable prefix of your
+    prompt (system message, big doc, shared context) and
+    change the trailing messages freely — cached-input
+    billing kicks in on the unchanging prefix. *)
+type cache_control =
+  | Ephemeral
+
 type message = {
   role    : role;
   content : content list;
   (** Most messages have a single [Text] part, but we always use a list
       so tool-use and multimodal content compose naturally. *)
+  cache   : cache_control option;
+  (** Provider-specific cache hint; only Anthropic reads it. *)
 }
+
+val message :
+  role:role ->
+  content:content list ->
+  ?cache:cache_control ->
+  unit ->
+  message
+(** Smart constructor — [cache] defaults to [None]. *)
 
 (** {1 Tools} *)
 
@@ -39,7 +64,45 @@ type tool_choice =
   | Required    (** Must call at least one tool *)
   | Tool of string  (** Call this specific tool *)
 
+(** Reasoning / thinking budget for models that expose one.
+
+    - OpenAI o-series and GPT-5 reasoning models accept
+      [reasoning_effort: "minimal"|"low"|"medium"|"high"].
+    - Anthropic extended thinking takes an explicit token budget
+      via [thinking: { type: "enabled", budget_tokens: N }].
+    - Gemini 2.5 exposes [generationConfig.thinkingConfig.thinkingBudget]
+      as an integer token budget; [-1] means "dynamic".
+
+    The effort variants map to provider-native defaults when
+    the provider wants a token budget (Low=1024, Medium=4096,
+    High=16384). [Budget n] is the explicit-token form for
+    providers that accept it. [Dynamic] maps to Gemini's [-1]
+    and is equivalent to [Auto] everywhere else. *)
+type reasoning_effort =
+  | Minimal
+  | Low
+  | Medium
+  | High
+  | Budget of int
+  | Dynamic
+
 (** {1 Requests} *)
+
+(** Response-format hints for models that support structured output.
+
+    - [Fmt_text] — default unstructured text.
+    - [Fmt_json_object] — free-form JSON (no schema).
+    - [Fmt_json_schema] — typed JSON output conforming to a
+      provider-native schema (passed through as opaque JSON).
+
+    OpenAI supports all three. Gemini supports [Fmt_json_object]
+    and [Fmt_json_schema] via [responseMimeType]+[responseSchema].
+    Anthropic has no native structured-output mode and codec
+    silently ignores the field. *)
+type response_format =
+  | Fmt_text
+  | Fmt_json_object
+  | Fmt_json_schema of Yojson.Safe.t
 
 type request = {
   model       : string;
@@ -49,12 +112,29 @@ type request = {
   max_tokens  : int option;
   temperature : float option;
   top_p       : float option;
+  top_k       : int option;
   stop        : string list;
   stream      : bool;
   user        : string option;
-  (** Pass provider-specific fields not covered above.
-      Merged into the serialized JSON body before sending. *)
+  reasoning   : reasoning_effort option;
+  seed        : int option;
+  response_format : response_format option;
+  safety_settings : Yojson.Safe.t option;
+  (** Gemini-specific escape hatch — passed through as the
+      top-level [safetySettings] field. Other providers
+      ignore it. *)
   extra       : (string * Yojson.Safe.t) list;
+  (** [reasoning] is optional reasoning / thinking budget; each codec maps
+      it to its provider-native shape (Gemini thinkingConfig, Anthropic
+      thinking block, OpenAI reasoning_effort).
+
+      [extra] holds provider-specific fields not covered above. Shallow-
+      recursively merged into the serialized JSON body: keys absent from
+      the codec's output are appended, and keys whose values are objects
+      on both sides merge recursively, so
+      [~extra:[("generationConfig", `Assoc [("thinkingConfig", ...)])]]
+      lands alongside [temperature] etc. without duplicating
+      [generationConfig] at the top level. *)
 }
 
 val request :
@@ -65,9 +145,14 @@ val request :
   ?max_tokens:int ->
   ?temperature:float ->
   ?top_p:float ->
+  ?top_k:int ->
   ?stop:string list ->
   ?stream:bool ->
   ?user:string ->
+  ?reasoning:reasoning_effort ->
+  ?seed:int ->
+  ?response_format:response_format ->
+  ?safety_settings:Yojson.Safe.t ->
   ?extra:(string * Yojson.Safe.t) list ->
   unit ->
   request

@@ -1,78 +1,21 @@
 (* bin/gemini_modes.ml — Exercise Gemini across sampling, thinking, JSON, tools, multi-turn. *)
 
-let make_https authenticator =
-  fun uri raw_flow ->
-    let host =
-      Uri.host uri |> Option.value ~default:""
-      |> Domain_name.of_string_exn |> Domain_name.host_exn
-    in
-    let tls_config = match Tls.Config.client ~authenticator () with
-      | Ok cfg -> cfg
-      | Error (`Msg m) -> failwith ("TLS config error: " ^ m)
-    in
-    Tls_eio.client_of_flow tls_config ~host raw_flow
-
 let () =
   Mirage_crypto_rng_unix.use_default ();
-  let key = match Sys.getenv_opt "GEMINI_API_KEY" with
+  let key =
+    match Sys.getenv_opt "GEMINI_API_KEY" with
     | Some k when k <> "" -> k
     | _ -> failwith "GEMINI_API_KEY not set"
   in
-  let authenticator = match Ca_certs.authenticator () with
-    | Ok a -> a
-    | Error (`Msg m) -> failwith ("CA load: " ^ m)
-  in
   Eio_main.run @@ fun env ->
-    Eio.Switch.run @@ fun sw ->
-      let module Http : Llaml.Client.Http = struct
-        type t = { client : Cohttp_eio.Client.t; sw : Eio.Switch.t }
-        let create () = {
-          client = Cohttp_eio.Client.make ~https:(Some (make_https authenticator)) env#net;
-          sw;
-        }
-        let make_headers pairs =
-          List.fold_left (fun acc (k, v) -> Cohttp.Header.add acc k v)
-            (Cohttp.Header.init ()) pairs
-        let post t ~url ~headers ~body =
-          let hdrs = make_headers headers in
-          let bsrc = Cohttp_eio.Body.of_string body in
-          let resp, rbody = Cohttp_eio.Client.post t.client ~sw:t.sw ~headers:hdrs ~body:bsrc url in
-          let status = Cohttp.Response.status resp |> Cohttp.Code.code_of_status in
-          let rh = Cohttp.Response.headers resp |> Cohttp.Header.to_list in
-          let s = Eio.Buf_read.(parse_exn take_all) rbody ~max_size:max_int in
-          Ok (status, s, rh)
-        let post_stream t ~url ~headers ~body ~on_line =
-          let hdrs = make_headers headers in
-          let bsrc = Cohttp_eio.Body.of_string body in
-          let resp, rbody = Cohttp_eio.Client.post t.client ~sw:t.sw ~headers:hdrs ~body:bsrc url in
-          let status = Cohttp.Response.status resp |> Cohttp.Code.code_of_status in
-          if status >= 400 then
-            Ok (status, Eio.Buf_read.(parse_exn take_all) rbody ~max_size:max_int)
-          else begin
-            let r = Eio.Buf_read.of_flow rbody ~max_size:max_int in
-            (try while true do on_line (Eio.Buf_read.line r) done
-             with End_of_file -> ());
-            Ok (status, "")
-          end
-        let post_stream_raw t ~url ~headers ~body ~on_data =
-          let hdrs = make_headers headers in
-          let bsrc = Cohttp_eio.Body.of_string body in
-          let resp, rbody = Cohttp_eio.Client.post t.client ~sw:t.sw ~headers:hdrs ~body:bsrc url in
-          let status = Cohttp.Response.status resp |> Cohttp.Code.code_of_status in
-          if status >= 400 then
-            Ok (status, Eio.Buf_read.(parse_exn take_all) rbody ~max_size:max_int)
-          else begin
-            let r = Eio.Buf_read.of_flow rbody ~max_size:max_int in
-            (try
-              let all = Eio.Buf_read.take_all r in
-              if String.length all > 0 then on_data all
-            with End_of_file -> ());
-            Ok (status, "")
-          end
-      end in
-      let module Client = Llaml.Client.Make (Llaml.Providers.Gemini) (Http) in
-      let http = Http.create () in
-      let client = Client.create ~auth:(Llaml.Auth.Api_key key) http in
+  Eio.Switch.run @@ fun sw ->
+  let client =
+    Llaml_eio.make
+      ~env ~sw
+      ~provider:(module Llaml.Providers.Gemini)
+      ~auth:(Llaml.Auth.Api_key key)
+      ()
+  in
 
       let text_of_resp (resp : Llaml.Types.response) =
         match resp.choices with
@@ -105,7 +48,7 @@ let () =
       in
       let run label req =
         Printf.printf "\n--- %s ---\n%!" label;
-        match Client.complete client req with
+        match client.Llaml_eio.complete req with
         | Error e -> Format.printf "ERROR: %a\n%!" Llaml.Types.pp_error e
         | Ok resp ->
           let text = text_of_resp resp in
@@ -124,8 +67,10 @@ let () =
            | _ -> ())
       in
 
-      let u t : Llaml.Types.message = { role = User; content = [Text t] } in
-      let a t : Llaml.Types.message = { role = Assistant; content = [Text t] } in
+      let u t : Llaml.Types.message =
+        { role = User; content = [Text t]; cache = None } in
+      let a t : Llaml.Types.message =
+        { role = Assistant; content = [Text t]; cache = None } in
       let flash = "gemini-2.5-flash" in
       let pro   = "gemini-2.5-pro" in
       let g3    = "gemini-3-pro-preview" in

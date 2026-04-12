@@ -117,7 +117,44 @@ let encode_request (req : Types.request) =
     fields := !fields @ [("tool_choice", encode_tool_choice req.tool_choice)]
   end);
   (match req.user with Some u -> fields := !fields @ [("user", `String u)] | None -> ());
-  let all_fields = !fields @ req.extra in
+  (match req.seed with
+   | Some n -> fields := !fields @ [("seed", `Int n)]
+   | None -> ());
+  (* OpenAI doesn't take [top_k]; silently ignore. *)
+  (match req.response_format with
+   | None
+   | Some Types.Fmt_text -> ()
+   | Some Types.Fmt_json_object ->
+     fields := !fields @ [
+       ("response_format", `Assoc [("type", `String "json_object")])
+     ]
+   | Some (Types.Fmt_json_schema schema) ->
+     fields := !fields @ [
+       ("response_format", `Assoc [
+         ("type", `String "json_schema");
+         ("json_schema", schema);
+       ])
+     ]);
+  (* Reasoning -> top-level [reasoning_effort] for o-series and
+     GPT-5 reasoning models. Explicit [Budget n] and [Dynamic]
+     fall back to the nearest qualitative bucket since the
+     OpenAI API doesn't accept a raw token count. *)
+  (match req.reasoning with
+   | None -> ()
+   | Some r ->
+     let label = match r with
+       | Minimal                -> "minimal"
+       | Low                    -> "low"
+       | Medium                 -> "medium"
+       | High                   -> "high"
+       | Budget n when n = 0    -> "minimal"
+       | Budget n when n < 2048 -> "low"
+       | Budget n when n < 8192 -> "medium"
+       | Budget _               -> "high"
+       | Dynamic                -> "medium"
+     in
+     fields := !fields @ [("reasoning_effort", `String label)]);
+  let all_fields = Json_merge.merge !fields req.extra in
   Ok (`Assoc all_fields)
 
 let decode_finish_reason = function
@@ -157,7 +194,7 @@ let decode_message role j : Types.message =
   let content_j = member "content" j in
   let text = to_string_opt content_j |> Option.value ~default:"" in
   let content = if text = "" then [] else [Types.Text text] in
-  { role; content }
+  { role; content; cache = None }
 
 let decode_response j =
   let id      = member "id" j |> to_string_opt |> Option.value ~default:"" in

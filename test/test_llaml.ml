@@ -19,7 +19,7 @@ let starts_with prefix s =
 
 let test_openai_encode_message_simple () =
   let msg : Llaml.Types.message =
-    { role = Llaml.Types.User; content = [Llaml.Types.Text "hello"] }
+    { role = Llaml.Types.User; content = [Llaml.Types.Text "hello"]; cache = None }
   in
   let j = Llaml.Openai_codec.encode_message msg in
   let s = Yojson.Safe.to_string j in
@@ -34,7 +34,8 @@ let test_openai_encode_message_simple () =
 let test_openai_encode_message_assistant_tool_use () =
   let msg : Llaml.Types.message = {
     role = Llaml.Types.Assistant;
-    content = [Llaml.Types.Tool_use { id = "call_1"; name = "my_tool"; input = `Assoc [("x", `Int 1)] }]
+    content = [Llaml.Types.Tool_use { id = "call_1"; name = "my_tool"; input = `Assoc [("x", `Int 1)] }];
+    cache = None;
   } in
   let j = Llaml.Openai_codec.encode_message msg in
   let s = Yojson.Safe.to_string j in
@@ -48,7 +49,8 @@ let test_openai_encode_message_assistant_tool_use () =
 let test_openai_encode_message_tool_result () =
   let msg : Llaml.Types.message = {
     role = Llaml.Types.Tool;
-    content = [Llaml.Types.Tool_result { id = "call_1"; content = "42"; is_error = false }]
+    content = [Llaml.Types.Tool_result { id = "call_1"; content = "42"; is_error = false }];
+    cache = None;
   } in
   let j = Llaml.Openai_codec.encode_message msg in
   let s = Yojson.Safe.to_string j in
@@ -154,9 +156,11 @@ let test_openai_encode_embed_request () =
 let test_anthropic_encode_request_system () =
   let messages = [
     { Llaml.Types.role = Llaml.Types.System;
-      content = [Llaml.Types.Text "You are helpful."] };
+      content = [Llaml.Types.Text "You are helpful."];
+      cache = None };
     { Llaml.Types.role = Llaml.Types.User;
-      content = [Llaml.Types.Text "Hi"] };
+      content = [Llaml.Types.Text "Hi"];
+      cache = None };
   ] in
   let req = Llaml.Types.request ~model:"claude-3-haiku-20240307" ~messages () in
   (match Llaml.Anthropic_codec.encode_request req with
@@ -420,6 +424,271 @@ let test_bedrock_parse_messages_two_frames () =
    | _ -> Alcotest.fail "expected two events")
 
 (* ------------------------------------------------------------------ *)
+(* Json_merge — D2 *)
+(* ------------------------------------------------------------------ *)
+
+let contains needle s =
+  try let _ = Str.search_forward (Str.regexp_string needle) s 0 in true
+  with Not_found -> false
+
+let test_json_merge_disjoint () =
+  let base = [("a", `Int 1)] in
+  let overlay = [("b", `Int 2)] in
+  let merged = Llaml.Json_merge.merge base overlay in
+  let s = Yojson.Safe.to_string (`Assoc merged) in
+  Alcotest.(check bool) "a present" true (contains "\"a\":1" s);
+  Alcotest.(check bool) "b present" true (contains "\"b\":2" s)
+
+let test_json_merge_nested_objects () =
+  let base = [
+    ("generationConfig", `Assoc [("temperature", `Float 0.0)])
+  ] in
+  let overlay = [
+    ("generationConfig",
+     `Assoc [("thinkingConfig",
+              `Assoc [("thinkingBudget", `Int 2048)])])
+  ] in
+  let merged = Llaml.Json_merge.merge base overlay in
+  let j = `Assoc merged in
+  let s = Yojson.Safe.to_string j in
+  (* Exactly one [generationConfig] key *)
+  let count =
+    let rec loop i n =
+      match Str.search_forward (Str.regexp_string "generationConfig") s i with
+      | j -> loop (j + 1) (n + 1)
+      | exception Not_found -> n
+    in
+    loop 0 0
+  in
+  Alcotest.(check int) "single generationConfig key" 1 count;
+  Alcotest.(check bool) "temperature preserved" true
+    (contains "\"temperature\":0.0" s);
+  Alcotest.(check bool) "thinkingBudget present" true
+    (contains "\"thinkingBudget\":2048" s)
+
+let test_json_merge_overlay_wins_on_scalar () =
+  let base = [("x", `Int 1)] in
+  let overlay = [("x", `Int 99)] in
+  let merged = Llaml.Json_merge.merge base overlay in
+  let s = Yojson.Safe.to_string (`Assoc merged) in
+  Alcotest.(check bool) "overlay wins" true (contains "\"x\":99" s);
+  Alcotest.(check bool) "base dropped" false (contains "\"x\":1," s)
+
+let test_gemini_encode_merges_extras_with_thinking () =
+  (* Regression for the historical collision: setting temperature
+     AND passing extras with generationConfig.thinkingConfig used to
+     emit TWO generationConfig keys at the top level. *)
+  let req =
+    Llaml.Types.request
+      ~model:"gemini-2.5-pro"
+      ~messages:[]
+      ~temperature:0.2
+      ~extra:[("generationConfig",
+               `Assoc [("thinkingConfig",
+                        `Assoc [("thinkingBudget", `Int 1024)])])]
+      ()
+  in
+  (match Llaml.Gemini_codec.encode_request req with
+   | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+   | Ok j ->
+     let s = Yojson.Safe.to_string j in
+     let count =
+       let rec loop i n =
+         match Str.search_forward (Str.regexp_string "generationConfig") s i with
+         | k -> loop (k + 1) (n + 1)
+         | exception Not_found -> n
+       in
+       loop 0 0
+     in
+     Alcotest.(check int) "single generationConfig key" 1 count;
+     Alcotest.(check bool) "temperature landed" true
+       (contains "\"temperature\":0.2" s);
+     Alcotest.(check bool) "thinkingBudget landed" true
+       (contains "\"thinkingBudget\":1024" s))
+
+(* ------------------------------------------------------------------ *)
+(* Reasoning knob — D3 *)
+(* ------------------------------------------------------------------ *)
+
+let test_gemini_reasoning_budget_emits_thinking_config () =
+  let req =
+    Llaml.Types.request
+      ~model:"gemini-2.5-pro"
+      ~messages:[]
+      ~reasoning:(Llaml.Types.Budget 4096)
+      ()
+  in
+  match Llaml.Gemini_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "has thinkingConfig" true
+      (contains "thinkingConfig" s);
+    Alcotest.(check bool) "thinkingBudget=4096" true
+      (contains "\"thinkingBudget\":4096" s)
+
+let test_gemini_reasoning_dynamic_emits_minus_one () =
+  let req =
+    Llaml.Types.request
+      ~model:"gemini-2.5-pro"
+      ~messages:[]
+      ~reasoning:Llaml.Types.Dynamic
+      ()
+  in
+  match Llaml.Gemini_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "thinkingBudget=-1" true
+      (contains "\"thinkingBudget\":-1" s)
+
+let test_anthropic_reasoning_high_emits_thinking_block () =
+  let req =
+    Llaml.Types.request
+      ~model:"claude-sonnet-4-5"
+      ~messages:[]
+      ~reasoning:Llaml.Types.High
+      ()
+  in
+  match Llaml.Anthropic_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "has thinking block" true (contains "\"thinking\":" s);
+    Alcotest.(check bool) "type enabled" true
+      (contains "\"type\":\"enabled\"" s);
+    Alcotest.(check bool) "budget_tokens=16384" true
+      (contains "\"budget_tokens\":16384" s)
+
+let test_openai_reasoning_medium_emits_effort_label () =
+  let req =
+    Llaml.Types.request
+      ~model:"o3-mini"
+      ~messages:[]
+      ~reasoning:Llaml.Types.Medium
+      ()
+  in
+  match Llaml.Openai_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "reasoning_effort=medium" true
+      (contains "\"reasoning_effort\":\"medium\"" s)
+
+let test_openai_reasoning_budget_rounds_to_label () =
+  (* Budget 16384 should bucket into "high". *)
+  let req =
+    Llaml.Types.request
+      ~model:"gpt-5"
+      ~messages:[]
+      ~reasoning:(Llaml.Types.Budget 16384)
+      ()
+  in
+  match Llaml.Openai_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "reasoning_effort=high" true
+      (contains "\"reasoning_effort\":\"high\"" s)
+
+(* ------------------------------------------------------------------ *)
+(* Cache control — B5 *)
+(* ------------------------------------------------------------------ *)
+
+let test_anthropic_cache_control_on_last_block () =
+  let req =
+    Llaml.Types.request
+      ~model:"claude-sonnet-4-5"
+      ~messages:[
+        { Llaml.Types.role = User;
+          content = [ Llaml.Types.Text "expensive context...";
+                      Llaml.Types.Text "question" ];
+          cache = Some Llaml.Types.Ephemeral };
+      ]
+      ()
+  in
+  match Llaml.Anthropic_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "has cache_control" true
+      (contains "cache_control" s);
+    Alcotest.(check bool) "type ephemeral" true
+      (contains "\"type\":\"ephemeral\"" s)
+
+let test_anthropic_cache_control_system_message () =
+  let req =
+    Llaml.Types.request
+      ~model:"claude-sonnet-4-5"
+      ~messages:[
+        { Llaml.Types.role = System;
+          content = [Llaml.Types.Text "You are a helpful assistant."];
+          cache = Some Llaml.Types.Ephemeral };
+        { Llaml.Types.role = User;
+          content = [Llaml.Types.Text "Hi"];
+          cache = None };
+      ]
+      ()
+  in
+  match Llaml.Anthropic_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "system is list form" true
+      (contains "\"system\":[" s);
+    Alcotest.(check bool) "system has cache_control" true
+      (contains "cache_control" s)
+
+(* ------------------------------------------------------------------ *)
+(* top_k / seed / response_format — B3 *)
+(* ------------------------------------------------------------------ *)
+
+let test_gemini_top_k_and_seed () =
+  let req =
+    Llaml.Types.request
+      ~model:"gemini-2.5-flash"
+      ~messages:[]
+      ~top_k:40
+      ~seed:12345
+      ()
+  in
+  match Llaml.Gemini_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "topK=40" true (contains "\"topK\":40" s);
+    Alcotest.(check bool) "seed=12345" true (contains "\"seed\":12345" s)
+
+let test_anthropic_top_k () =
+  let req =
+    Llaml.Types.request
+      ~model:"claude-sonnet-4-5"
+      ~messages:[]
+      ~top_k:50
+      ()
+  in
+  match Llaml.Anthropic_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "top_k=50" true (contains "\"top_k\":50" s)
+
+let test_openai_response_format_json_object () =
+  let req =
+    Llaml.Types.request
+      ~model:"gpt-4o"
+      ~messages:[]
+      ~response_format:Llaml.Types.Fmt_json_object
+      ()
+  in
+  match Llaml.Openai_codec.encode_request req with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok j ->
+    let s = Yojson.Safe.to_string j in
+    Alcotest.(check bool) "response_format json_object" true
+      (contains "\"type\":\"json_object\"" s)
+
+(* ------------------------------------------------------------------ *)
 (* Test registration *)
 (* ------------------------------------------------------------------ *)
 
@@ -465,5 +734,27 @@ let () =
       Alcotest.test_case "parse single frame" `Quick test_bedrock_parse_messages_single;
       Alcotest.test_case "parse incomplete frame" `Quick test_bedrock_parse_messages_incomplete;
       Alcotest.test_case "parse two frames" `Quick test_bedrock_parse_messages_two_frames;
+    ];
+    "json_merge", [
+      Alcotest.test_case "disjoint keys" `Quick test_json_merge_disjoint;
+      Alcotest.test_case "nested objects merge" `Quick test_json_merge_nested_objects;
+      Alcotest.test_case "scalar overlay wins" `Quick test_json_merge_overlay_wins_on_scalar;
+      Alcotest.test_case "gemini extras merge with thinking" `Quick test_gemini_encode_merges_extras_with_thinking;
+    ];
+    "reasoning", [
+      Alcotest.test_case "gemini Budget -> thinkingConfig" `Quick test_gemini_reasoning_budget_emits_thinking_config;
+      Alcotest.test_case "gemini Dynamic -> -1" `Quick test_gemini_reasoning_dynamic_emits_minus_one;
+      Alcotest.test_case "anthropic High -> thinking block" `Quick test_anthropic_reasoning_high_emits_thinking_block;
+      Alcotest.test_case "openai Medium -> effort label" `Quick test_openai_reasoning_medium_emits_effort_label;
+      Alcotest.test_case "openai Budget bucketed to label" `Quick test_openai_reasoning_budget_rounds_to_label;
+    ];
+    "cache_control", [
+      Alcotest.test_case "anthropic cache on last block" `Quick test_anthropic_cache_control_on_last_block;
+      Alcotest.test_case "anthropic cache on system message" `Quick test_anthropic_cache_control_system_message;
+    ];
+    "extra_knobs", [
+      Alcotest.test_case "gemini top_k and seed" `Quick test_gemini_top_k_and_seed;
+      Alcotest.test_case "anthropic top_k" `Quick test_anthropic_top_k;
+      Alcotest.test_case "openai response_format json_object" `Quick test_openai_response_format_json_object;
     ];
   ]

@@ -66,11 +66,50 @@ let encode_request (req : Types.request) =
   (match req.top_p with Some f -> gen_config := !gen_config @ [("topP", `Float f)] | None -> ());
   (if req.stop <> [] then
     gen_config := !gen_config @ [("stopSequences", `List (List.map (fun s -> `String s) req.stop))]);
+  (match req.top_k with
+   | Some n -> gen_config := !gen_config @ [("topK", `Int n)]
+   | None -> ());
+  (match req.seed with
+   | Some n -> gen_config := !gen_config @ [("seed", `Int n)]
+   | None -> ());
+  (match req.response_format with
+   | None
+   | Some Types.Fmt_text -> ()
+   | Some Types.Fmt_json_object ->
+     gen_config := !gen_config @ [
+       ("responseMimeType", `String "application/json")
+     ]
+   | Some (Types.Fmt_json_schema schema) ->
+     gen_config := !gen_config @ [
+       ("responseMimeType", `String "application/json");
+       ("responseSchema", schema)
+     ]);
+  (* Reasoning -> generationConfig.thinkingConfig.thinkingBudget.
+     Gemini uses integer token budgets; the effort enum maps to
+     rough defaults, Budget takes the raw value, Dynamic becomes -1. *)
+  (match req.reasoning with
+   | None -> ()
+   | Some r ->
+     let budget =
+       match r with
+       | Minimal   -> 0
+       | Low       -> 1024
+       | Medium    -> 4096
+       | High      -> 16384
+       | Budget n  -> n
+       | Dynamic   -> -1
+     in
+     gen_config := !gen_config @ [
+       ("thinkingConfig", `Assoc [("thinkingBudget", `Int budget)])
+     ]);
   (if !gen_config <> [] then
     fields := !fields @ [("generationConfig", `Assoc !gen_config)]);
+  (match req.safety_settings with
+   | None -> ()
+   | Some s -> fields := !fields @ [("safetySettings", s)]);
   (if req.tools <> [] then
     fields := !fields @ [("tools", `List [`Assoc [("function_declarations", `List (List.map encode_tool req.tools))]])]);
-  let all_fields = !fields @ req.extra in
+  let all_fields = Json_merge.merge !fields req.extra in
   Ok (`Assoc all_fields)
 
 let decode_finish_reason = function
@@ -108,6 +147,11 @@ let decode_part j =
      | fc ->
        let name  = member "name" fc |> to_string_opt |> Option.value ~default:"" in
        let args  = member "args" fc in
+       (* Gemini does not assign unique ids to function calls the way
+          OpenAI/Anthropic do — the tool is identified entirely by
+          [name]. We mirror that by setting [id = name]; callers that
+          round-trip tool results back must match on [name] rather
+          than assuming [id] is opaque. *)
        Some (Types.Tool_use { id = name; name; input = args }))
 
 let decode_response j =
@@ -127,7 +171,9 @@ let decode_response j =
       | _ -> None
     ) content in
     let message_content = List.filter (function Types.Tool_use _ -> false | _ -> true) content in
-    let message = { Types.role = Types.Assistant; content = message_content } in
+    let message : Types.message = {
+      role = Types.Assistant; content = message_content; cache = None
+    } in
     { Types.index = i; message; tool_calls; finish_reason = fr }
   ) candidates in
   Ok { Types.id = ""; model = ""; choices; usage; created = 0 }

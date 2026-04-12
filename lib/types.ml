@@ -14,10 +14,17 @@ type content =
   | Tool_use    of { id : string; name : string; input : Yojson.Safe.t }
   | Tool_result of { id : string; content : string; is_error : bool }
 
+type cache_control =
+  | Ephemeral
+
 type message = {
   role    : role;
   content : content list;
+  cache   : cache_control option;
 }
+
+let message ~role ~content ?cache () =
+  { role; content; cache }
 
 (** {1 Tools} *)
 
@@ -33,7 +40,20 @@ type tool_choice =
   | Required
   | Tool of string
 
+type reasoning_effort =
+  | Minimal
+  | Low
+  | Medium
+  | High
+  | Budget of int
+  | Dynamic
+
 (** {1 Requests} *)
+
+type response_format =
+  | Fmt_text
+  | Fmt_json_object
+  | Fmt_json_schema of Yojson.Safe.t
 
 type request = {
   model       : string;
@@ -43,9 +63,14 @@ type request = {
   max_tokens  : int option;
   temperature : float option;
   top_p       : float option;
+  top_k       : int option;
   stop        : string list;
   stream      : bool;
   user        : string option;
+  reasoning   : reasoning_effort option;
+  seed        : int option;
+  response_format : response_format option;
+  safety_settings : Yojson.Safe.t option;
   extra       : (string * Yojson.Safe.t) list;
 }
 
@@ -55,13 +80,19 @@ let request ~model ~messages
     ?max_tokens
     ?temperature
     ?top_p
+    ?top_k
     ?(stop = [])
     ?(stream = false)
     ?user
+    ?reasoning
+    ?seed
+    ?response_format
+    ?safety_settings
     ?(extra = [])
     () =
   { model; messages; tools; tool_choice; max_tokens; temperature;
-    top_p; stop; stream; user; extra }
+    top_p; top_k; stop; stream; user; reasoning; seed;
+    response_format; safety_settings; extra }
 
 (** {1 Responses} *)
 
