@@ -1,5 +1,6 @@
 (library
  (name llaml)
+ (public_name llaml)
  (ocamlopt_flags (:standard -O2))
  (flags (:standard -w -67-16-69-26))
  (libraries yojson uri digestif base64 str unix))

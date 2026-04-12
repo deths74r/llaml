@@ -1,5 +1,6 @@
 (library
  (name llaml_eio)
+ (public_name llaml-eio)
  (flags (:standard -w -67-16-69-26))
  (libraries
   llaml
