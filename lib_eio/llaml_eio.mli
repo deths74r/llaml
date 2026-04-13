@@ -52,8 +52,8 @@ type client = {
     Llaml.Types.embed_request ->
     (Llaml.Types.embed_response, Llaml.Types.error) result;
 
-  list_models : unit -> (string list, string) result;
-  (** Fetch available model IDs from the provider's /models
+  list_models : unit -> (Llaml.Providers.model_info list, string) result;
+  (** Fetch available models from the provider's /models
       endpoint. Returns [Error] for providers without a listing
       endpoint (Anthropic, Bedrock) or on network failure. *)
 }

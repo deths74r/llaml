@@ -379,7 +379,12 @@ let models_endpoint = function
   | "ollama"     -> Some "http://localhost:11434/v1/models"
   | _            -> None
 
-(** Parse model IDs from a provider's /models JSON response.
+type model_info = {
+  id : string;
+  description : string;
+}
+
+(** Parse model entries from a provider's /models JSON response.
     Gemini uses a different schema from the OpenAI-compatible
     providers, so we dispatch on [provider_id]. *)
 let parse_models_response ~provider_id body =
@@ -388,28 +393,37 @@ let parse_models_response ~provider_id body =
     let open Yojson.Safe.Util in
     match provider_id with
     | "gemini" ->
-      (* { "models": [ { "name": "models/gemini-...", "supportedGenerationMethods": [...] } ] }
-         Filter to models that support generateContent. *)
       let models = j |> member "models" |> to_list in
-      let ids = List.filter_map (fun m ->
+      let entries = List.filter_map (fun m ->
           let name = m |> member "name" |> to_string in
+          let desc = m |> member "displayName" |> to_string_option
+                     |> Option.value ~default:"" in
           let methods = try m |> member "supportedGenerationMethods" |> to_list
                             |> List.map to_string
             with _ -> [] in
           if List.mem "generateContent" methods then
-            (* Strip "models/" prefix *)
             let prefix = "models/" in
             let plen = String.length prefix in
-            if String.length name > plen && String.sub name 0 plen = prefix then
-              Some (String.sub name plen (String.length name - plen))
-            else Some name
+            let id =
+              if String.length name > plen && String.sub name 0 plen = prefix then
+                String.sub name plen (String.length name - plen)
+              else name
+            in
+            Some { id; description = desc }
           else None) models
       in
-      Ok ids
+      Ok entries
     | _ ->
-      (* OpenAI-compatible: { "data": [ { "id": "model-name" } ] } *)
       let data = j |> member "data" |> to_list in
-      let ids = List.map (fun m -> m |> member "id" |> to_string) data in
-      Ok ids
+      let entries = List.map (fun m ->
+          let id = m |> member "id" |> to_string in
+          let desc = (match m |> member "name" with
+            | `String s -> s
+            | _ -> match m |> member "owned_by" with
+              | `String s -> s
+              | _ -> "") in
+          { id; description = desc }) data
+      in
+      Ok entries
   with exn ->
     Error (Printf.sprintf "failed to parse models response: %s" (Printexc.to_string exn))

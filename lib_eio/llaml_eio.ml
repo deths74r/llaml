@@ -12,7 +12,7 @@ type client = {
   embed :
     Llaml.Types.embed_request ->
     (Llaml.Types.embed_response, Llaml.Types.error) result;
-  list_models : unit -> (string list, string) result;
+  list_models : unit -> (Llaml.Providers.model_info list, string) result;
 }
 
 let make ~env ~sw ?authenticator

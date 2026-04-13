@@ -59,8 +59,14 @@ val models_endpoint : string -> string option
     provider's model-listing endpoint, or [None] for providers
     that don't expose one (e.g. Anthropic, Bedrock). *)
 
+type model_info = {
+  id : string;
+  description : string;
+}
+
 val parse_models_response :
-  provider_id:string -> string -> (string list, string) result
+  provider_id:string -> string -> (model_info list, string) result
 (** Parse a model-listing JSON response body into a list of
-    model IDs. Handles Gemini's format (filters to models
-    supporting generateContent) and OpenAI-compatible format. *)
+    model entries with IDs and descriptions. Handles Gemini's
+    format (filters to models supporting generateContent,
+    uses displayName) and OpenAI-compatible format. *)
