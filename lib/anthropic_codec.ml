@@ -295,7 +295,7 @@ let decode_chunk (state : state) (ev : Types.sse_event) =
           let name = member "name" block |> to_string_opt |> Option.value ~default:"" in
           state.blocks <- (index, `Tool (id, name)) :: state.blocks;
           let tc_delta : Types.tool_call_delta =
-            { index; id = Some id; name = Some name; arguments = None } in
+            { index; id = Some id; name = Some name; arguments = None; thought_signature = None } in
           let delta : Types.delta =
             { role = None; content = None; tool_calls = [tc_delta] } in
           Ok (Some { Types.id = state.msg_id; model = state.model; index = 0;
@@ -317,7 +317,7 @@ let decode_chunk (state : state) (ev : Types.sse_event) =
         | "input_json_delta" ->
           let partial  = member "partial_json" delta_j |> to_string_opt |> Option.value ~default:"" in
           let tc_delta : Types.tool_call_delta =
-            { index; id = None; name = None; arguments = Some partial } in
+            { index; id = None; name = None; arguments = Some partial; thought_signature = None } in
           let delta : Types.delta = { role = None; content = None; tool_calls = [tc_delta] } in
           Ok (Some { Types.id = state.msg_id; model = state.model; index = 0;
                      delta; finish_reason = None; usage = None })

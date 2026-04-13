@@ -211,9 +211,10 @@ let decode_response j =
         Some { Types.id; name; arguments = Yojson.Safe.to_string input }
       | _ -> None
     ) content in
-    let message_content = List.filter (function Types.Tool_use _ -> false | _ -> true) content in
+    (* Keep Tool_use items in message.content so thought_signature
+       round-trips through conversation history. *)
     let message : Types.message = {
-      role = Types.Assistant; content = message_content; cache = None
+      role = Types.Assistant; content; cache = None
     } in
     { Types.index = i; message; tool_calls; finish_reason = fr }
   ) candidates in
@@ -251,14 +252,18 @@ let decode_chunk () (ev : Types.sse_event) =
            | [] ->
              { Types.role = None; content = None; tool_calls = [] }, None
            | c :: _ ->
-             let text = match c.Types.message.content with
-               | [Types.Text t] -> Some t
+             let text = List.find_map (function
+               | Types.Text t -> Some t | _ -> None
+             ) c.Types.message.content in
+             (* Build deltas from message.content to preserve
+                thought_signature (which tool_calls list lacks) *)
+             let tc_deltas = List.filter_map (function
+               | Types.Tool_use { id; name; input; thought_signature } ->
+                 Some { Types.index = 0; id = Some id; name = Some name;
+                        arguments = Some (Yojson.Safe.to_string input);
+                        thought_signature }
                | _ -> None
-             in
-             let tc_deltas = List.map (fun (tc : Types.tool_call) ->
-               { Types.index = 0; id = Some tc.id; name = Some tc.name;
-                 arguments = Some tc.arguments }
-             ) c.Types.tool_calls in
+             ) c.Types.message.content in
              { Types.role = Some Types.Assistant; content = text; tool_calls = tc_deltas },
              c.Types.finish_reason
          in

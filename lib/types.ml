@@ -145,6 +145,7 @@ type tool_call_delta = {
   id        : string option;
   name      : string option;
   arguments : string option;
+  thought_signature : string option;
 }
 
 type delta = {

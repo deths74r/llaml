@@ -281,7 +281,7 @@ let decode_chunk () (ev : Types.sse_event) =
                let fn      = member "function" tc in
                let name_opt = member "name" fn |> to_string_opt in
                let args_opt = member "arguments" fn |> to_string_opt in
-               Some { Types.index; id = id_opt; name = name_opt; arguments = args_opt }
+               Some { Types.index; id = id_opt; name = name_opt; arguments = args_opt; thought_signature = None }
              ) tcs
          in
          let fr    = member "finish_reason" c |> to_string_opt |> (fun o -> Option.bind o decode_finish_reason) in

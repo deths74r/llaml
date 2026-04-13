@@ -255,7 +255,7 @@ let decode_chunk (state : state) (ev : Types.sse_event) =
           (match to_string_opt (member "input" tool_use_j) with
            | Some partial ->
              let tc_delta : Types.tool_call_delta =
-               { index = 0; id = None; name = None; arguments = Some partial } in
+               { index = 0; id = None; name = None; arguments = Some partial; thought_signature = None } in
              let delta : Types.delta = { role = None; content = None; tool_calls = [tc_delta] } in
              Ok (Some { Types.id = state.chunk_id; model = ""; index = 0;
                         delta; finish_reason = None; usage = None })

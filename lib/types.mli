@@ -214,6 +214,7 @@ type tool_call_delta = {
   id        : string option;
   name      : string option;
   arguments : string option;  (** Accumulate across chunks to reconstruct *)
+  thought_signature : string option;  (** Gemini thought signature for round-trip *)
 }
 
 type delta = {
