@@ -34,7 +34,7 @@ let encode_content_block = function
         ("url", `String url)
       ])
     ]
-  | Types.Tool_use { id; name; input } ->
+  | Types.Tool_use { id; name; input; _ } ->
     `Assoc [
       ("type", `String "tool_use");
       ("id", `String id);
@@ -232,11 +232,11 @@ let decode_response j =
       let id    = member "id" block |> to_string_opt |> Option.value ~default:"" in
       let name  = member "name" block |> to_string_opt |> Option.value ~default:"" in
       let input = member "input" block in
-      Some (Types.Tool_use { id; name; input })
+      Some (Types.Tool_use { id; name; input; thought_signature = None })
     | _ -> None
   ) content_blocks in
   let tool_calls = List.filter_map (function
-    | Types.Tool_use { id; name; input } ->
+    | Types.Tool_use { id; name; input; _ } ->
       Some { Types.id; name; arguments = Yojson.Safe.to_string input }
     | _ -> None
   ) all_content in

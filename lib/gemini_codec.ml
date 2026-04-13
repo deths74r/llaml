@@ -32,11 +32,16 @@ let encode_part = function
     `Assoc [("text", `String t)]
   | Types.Image { url; _ } ->
     `Assoc [("fileData", `Assoc [("fileUri", `String url)])]
-  | Types.Tool_use { name; input; _ } ->
-    `Assoc [("functionCall", `Assoc [
+  | Types.Tool_use { name; input; thought_signature; _ } ->
+    let parts = [("functionCall", `Assoc [
       ("name", `String (sanitize_tool_name name));
       ("args", input);
-    ])]
+    ])] in
+    let parts = match thought_signature with
+      | Some ts -> parts @ [("thoughtSignature", `String ts)]
+      | None -> parts
+    in
+    `Assoc parts
   | Types.Tool_result { id; content; _ } ->
     (* Gemini requires [functionResponse.name] to match the
        [functionCall.name] in the earlier turn — that's how
@@ -187,7 +192,8 @@ let decode_part j =
           [name]. We mirror that by setting [id = name]; callers that
           round-trip tool results back must match on [name] rather
           than assuming [id] is opaque. *)
-       Some (Types.Tool_use { id = name; name; input = args }))
+       let thought_signature = member "thoughtSignature" j |> to_string_opt in
+       Some (Types.Tool_use { id = name; name; input = args; thought_signature }))
 
 let decode_response j =
   let usage      = match member "usageMetadata" j with
@@ -201,7 +207,7 @@ let decode_response j =
     let parts     = to_list_opt (member "parts" content_j) |> Option.value ~default:[] in
     let content   = List.filter_map decode_part parts in
     let tool_calls = List.filter_map (function
-      | Types.Tool_use { id; name; input } ->
+      | Types.Tool_use { id; name; input; _ } ->
         Some { Types.id; name; arguments = Yojson.Safe.to_string input }
       | _ -> None
     ) content in

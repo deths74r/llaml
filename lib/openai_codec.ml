@@ -32,7 +32,7 @@ let encode_message (msg : Types.message) =
     `Assoc (List.rev fields)
   | Types.Assistant ->
     let tool_uses = List.filter_map (function
-      | Types.Tool_use { id; name; input } -> Some (id, name, input)
+      | Types.Tool_use { id; name; input; _ } -> Some (id, name, input)
       | _ -> None
     ) msg.content in
     let text_parts = List.filter_map (function

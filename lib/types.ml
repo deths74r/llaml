@@ -11,7 +11,8 @@ type role =
 type content =
   | Text        of string
   | Image       of { url : string; detail : [ `Low | `High | `Auto ] option }
-  | Tool_use    of { id : string; name : string; input : Yojson.Safe.t }
+  | Tool_use    of { id : string; name : string; input : Yojson.Safe.t;
+                     thought_signature : string option }
   | Tool_result of { id : string; content : string; is_error : bool }
 
 type cache_control =

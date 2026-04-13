@@ -13,7 +13,7 @@ let encode_content = function
     `Assoc [("text", `String t)]
   | Types.Image { url; _ } ->
     `Assoc [("text", `String ("[Image: " ^ url ^ "]"))]
-  | Types.Tool_use { id; name; input } ->
+  | Types.Tool_use { id; name; input; _ } ->
     `Assoc [("toolUse", `Assoc [
       ("toolUseId", `String id);
       ("name", `String name);
@@ -104,7 +104,7 @@ let decode_content_block j =
        let id    = member "toolUseId" tu |> to_string_opt |> Option.value ~default:"" in
        let name  = member "name" tu |> to_string_opt |> Option.value ~default:"" in
        let input = member "input" tu in
-       Some (Types.Tool_use { id; name; input }))
+       Some (Types.Tool_use { id; name; input; thought_signature = None }))
 
 let decode_response j =
   let output    = member "output" j in
@@ -117,7 +117,7 @@ let decode_response j =
   let content_blocks = to_list_opt (member "content" message_j) |> Option.value ~default:[] in
   let content   = List.filter_map decode_content_block content_blocks in
   let tool_calls = List.filter_map (function
-    | Types.Tool_use { id; name; input } ->
+    | Types.Tool_use { id; name; input; _ } ->
       Some { Types.id; name; arguments = Yojson.Safe.to_string input }
     | _ -> None
   ) content in
