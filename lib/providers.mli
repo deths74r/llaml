@@ -62,6 +62,7 @@ val models_endpoint : string -> string option
 type model_info = {
   id : string;
   description : string;
+  supports_reasoning : bool;
 }
 
 val parse_models_response :

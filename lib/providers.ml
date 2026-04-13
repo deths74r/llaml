@@ -382,6 +382,7 @@ let models_endpoint = function
 type model_info = {
   id : string;
   description : string;
+  supports_reasoning : bool;
 }
 
 (** Parse model entries from a provider's /models JSON response.
@@ -409,12 +410,23 @@ let parse_models_response ~provider_id body =
                 String.sub name plen (String.length name - plen)
               else name
             in
-            Some { id; description = desc }
+            let supports_reasoning =
+              (try m |> member "thinking" |> to_bool with _ -> false)
+            in
+            Some { id; description = desc; supports_reasoning }
           else None) models
       in
       Ok entries
     | _ ->
       let data = j |> member "data" |> to_list in
+      let is_reasoning_model id =
+        let has p =
+          let plen = String.length p in
+          String.length id >= plen && String.sub id 0 plen = p
+        in
+        has "o1" || has "o3" || has "o4"
+        || has "deepseek-reasoner"
+      in
       let entries = List.map (fun m ->
           let id = m |> member "id" |> to_string in
           let desc = (match m |> member "name" with
@@ -422,7 +434,8 @@ let parse_models_response ~provider_id body =
             | _ -> match m |> member "owned_by" with
               | `String s -> s
               | _ -> "") in
-          { id; description = desc }) data
+          { id; description = desc;
+            supports_reasoning = is_reasoning_model id }) data
       in
       Ok entries
   with exn ->
