@@ -53,3 +53,14 @@ val catalog : (string * string) list
     update — but good enough for autocomplete defaults. Downstream
     consumers that want a live list should hit the provider's own
     [/models] endpoint. *)
+
+val models_endpoint : string -> string option
+(** [models_endpoint provider_id] returns the URL for the
+    provider's model-listing endpoint, or [None] for providers
+    that don't expose one (e.g. Anthropic, Bedrock). *)
+
+val parse_models_response :
+  provider_id:string -> string -> (string list, string) result
+(** Parse a model-listing JSON response body into a list of
+    model IDs. Handles Gemini's format (filters to models
+    supporting generateContent) and OpenAI-compatible format. *)

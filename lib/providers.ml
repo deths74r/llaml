@@ -358,3 +358,58 @@ let catalog : (string * string) list = [
   "ollama/llama3.3",               "ollama";
   "ollama/qwen2.5-coder",          "ollama";
 ]
+
+(** {1 Live model listing}
+
+    Maps provider IDs to their model-listing endpoint URL.
+    Returns [None] for providers that don't expose one
+    (Anthropic, Bedrock). *)
+
+let models_endpoint = function
+  | "gemini"     -> Some "https://generativelanguage.googleapis.com/v1beta/models"
+  | "openai"     -> Some "https://api.openai.com/v1/models"
+  | "groq"       -> Some "https://api.groq.com/openai/v1/models"
+  | "mistral"    -> Some "https://api.mistral.ai/v1/models"
+  | "together"   -> Some "https://api.together.xyz/v1/models"
+  | "fireworks"  -> Some "https://api.fireworks.ai/inference/v1/models"
+  | "deepseek"   -> Some "https://api.deepseek.com/v1/models"
+  | "xai"        -> Some "https://api.x.ai/v1/models"
+  | "cerebras"   -> Some "https://api.cerebras.ai/v1/models"
+  | "openrouter" -> Some "https://openrouter.ai/api/v1/models"
+  | "ollama"     -> Some "http://localhost:11434/v1/models"
+  | _            -> None
+
+(** Parse model IDs from a provider's /models JSON response.
+    Gemini uses a different schema from the OpenAI-compatible
+    providers, so we dispatch on [provider_id]. *)
+let parse_models_response ~provider_id body =
+  try
+    let j = Yojson.Safe.from_string body in
+    let open Yojson.Safe.Util in
+    match provider_id with
+    | "gemini" ->
+      (* { "models": [ { "name": "models/gemini-...", "supportedGenerationMethods": [...] } ] }
+         Filter to models that support generateContent. *)
+      let models = j |> member "models" |> to_list in
+      let ids = List.filter_map (fun m ->
+          let name = m |> member "name" |> to_string in
+          let methods = try m |> member "supportedGenerationMethods" |> to_list
+                            |> List.map to_string
+            with _ -> [] in
+          if List.mem "generateContent" methods then
+            (* Strip "models/" prefix *)
+            let prefix = "models/" in
+            let plen = String.length prefix in
+            if String.length name > plen && String.sub name 0 plen = prefix then
+              Some (String.sub name plen (String.length name - plen))
+            else Some name
+          else None) models
+      in
+      Ok ids
+    | _ ->
+      (* OpenAI-compatible: { "data": [ { "id": "model-name" } ] } *)
+      let data = j |> member "data" |> to_list in
+      let ids = List.map (fun m -> m |> member "id" |> to_string) data in
+      Ok ids
+  with exn ->
+    Error (Printf.sprintf "failed to parse models response: %s" (Printexc.to_string exn))

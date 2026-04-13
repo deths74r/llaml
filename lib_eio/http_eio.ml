@@ -57,6 +57,20 @@ let make_headers pairs =
     (Cohttp.Header.init ())
     pairs
 
+let get t ~url ~headers =
+  let hdrs = make_headers headers in
+  match
+    Cohttp_eio.Client.get t.client ~sw:t.sw ~headers:hdrs url
+  with
+  | exception exn -> Error (Printexc.to_string exn)
+  | (resp, rbody) ->
+    let status = Cohttp.Response.status resp |> Cohttp.Code.code_of_status in
+    let rh = Cohttp.Response.headers resp |> Cohttp.Header.to_list in
+    (try
+       let s = Eio.Buf_read.(parse_exn take_all) rbody ~max_size:max_int in
+       Ok (status, s, rh)
+     with exn -> Error (Printexc.to_string exn))
+
 let post t ~url ~headers ~body =
   let hdrs = make_headers headers in
   let bsrc = Cohttp_eio.Body.of_string body in

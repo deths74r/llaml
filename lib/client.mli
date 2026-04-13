@@ -17,6 +17,13 @@
 module type Http = sig
   type t
 
+  val get :
+    t ->
+    url:Uri.t ->
+    headers:(string * string) list ->
+    (int * string * (string * string) list, string) result
+  (** Blocking GET.  Returns [(status, body, response_headers)]. *)
+
   val post :
     t ->
     url:Uri.t ->
