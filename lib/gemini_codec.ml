@@ -187,13 +187,19 @@ let decode_part j =
      | fc ->
        let name  = member "name" fc |> to_string_opt |> Option.value ~default:"" in
        let args  = member "args" fc in
-       (* Gemini does not assign unique ids to function calls the way
-          OpenAI/Anthropic do — the tool is identified entirely by
-          [name]. We mirror that by setting [id = name]; callers that
-          round-trip tool results back must match on [name] rather
-          than assuming [id] is opaque. *)
+       (* Newer Gemini models (2.5+, 3.x-preview) emit an opaque
+          [id] field per functionCall — read it when present so
+          callers can distinguish multiple calls to the same
+          tool in one response. Older models omit it; fall back
+          to [name] so round-trip tool_result matching by name
+          still works. *)
+       let id =
+         match member "id" fc |> to_string_opt with
+         | Some s when s <> "" -> s
+         | _ -> name
+       in
        let thought_signature = member "thoughtSignature" j |> to_string_opt in
-       Some (Types.Tool_use { id = name; name; input = args; thought_signature }))
+       Some (Types.Tool_use { id; name; input = args; thought_signature }))
 
 let decode_response j =
   let usage      = match member "usageMetadata" j with
@@ -256,14 +262,31 @@ let decode_chunk () (ev : Types.sse_event) =
                | Types.Text t -> Some t | _ -> None
              ) c.Types.message.content in
              (* Build deltas from message.content to preserve
-                thought_signature (which tool_calls list lacks) *)
-             let tc_deltas = List.filter_map (function
+                thought_signature (which tool_calls list lacks).
+
+                Each Tool_use gets its OWN index. Consumers
+                (e.g. LMI's llaml_provider) key their
+                accumulator arrays by [td.index]; if every
+                delta shares [index = 0] (as the pre-fix
+                version did), multiple tool_calls in the same
+                response collide — the consumer's args buffer
+                receives concatenated JSON fragments like
+                [{"a":1}{"b":2}], fails to parse, and every
+                call surfaces with empty [input = {}]. See
+                bug report in LMI's m15-pilot-interface
+                dogfood session, 2026-04-16. *)
+             let tool_uses =
+               List.filter (function Types.Tool_use _ -> true | _ -> false)
+                 c.Types.message.content
+             in
+             let tc_deltas = List.mapi (fun i tu ->
+               match tu with
                | Types.Tool_use { id; name; input; thought_signature } ->
-                 Some { Types.index = 0; id = Some id; name = Some name;
-                        arguments = Some (Yojson.Safe.to_string input);
-                        thought_signature }
-               | _ -> None
-             ) c.Types.message.content in
+                 { Types.index = i; id = Some id; name = Some name;
+                   arguments = Some (Yojson.Safe.to_string input);
+                   thought_signature }
+               | _ -> assert false  (* filtered above *)
+             ) tool_uses in
              { Types.role = Some Types.Assistant; content = text; tool_calls = tc_deltas },
              c.Types.finish_reason
          in

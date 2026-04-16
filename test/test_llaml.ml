@@ -643,6 +643,139 @@ let test_anthropic_cache_control_system_message () =
 (* top_k / seed / response_format — B3 *)
 (* ------------------------------------------------------------------ *)
 
+(* Regression: multiple functionCall parts in one Gemini response
+   must each get a distinct [index] in the tool_call_delta list.
+   Earlier versions hardcoded [index = 0] for every Tool_use,
+   which caused consumers (e.g. LMI's llaml_provider accumulator)
+   to merge all calls into one slot — concatenating their args
+   into invalid JSON and surfacing every call with empty input.
+   See llaml commit fixing this + LMI 2026-04-16 dogfood. *)
+let test_gemini_decode_chunk_multiple_tool_calls () =
+  let resp_json = `Assoc [
+    ("candidates", `List [
+      `Assoc [
+        ("content", `Assoc [
+          ("parts", `List [
+            `Assoc [
+              ("functionCall", `Assoc [
+                ("name", `String "read_file");
+                ("args", `Assoc [("path", `String "a.ml")]);
+                ("id", `String "call_a")
+              ])
+            ];
+            `Assoc [
+              ("functionCall", `Assoc [
+                ("name", `String "read_file");
+                ("args", `Assoc [("path", `String "b.ml")]);
+                ("id", `String "call_b")
+              ])
+            ];
+            `Assoc [
+              ("functionCall", `Assoc [
+                ("name", `String "read_file");
+                ("args", `Assoc [("path", `String "c.ml")]);
+                ("id", `String "call_c")
+              ])
+            ]
+          ])
+        ]);
+        ("finishReason", `String "STOP")
+      ]
+    ])
+  ] in
+  let ev : Llaml.Types.sse_event =
+    { event = None; data = Yojson.Safe.to_string resp_json }
+  in
+  match Llaml.Gemini_codec.decode_chunk () ev with
+  | Error e -> Alcotest.failf "decode_chunk error: %s" e.Llaml.Types.message
+  | Ok None -> Alcotest.fail "expected a chunk, got None"
+  | Ok (Some chunk) ->
+    let deltas = chunk.Llaml.Types.delta.tool_calls in
+    Alcotest.(check int) "three deltas" 3 (List.length deltas);
+    let indices = List.map (fun (d : Llaml.Types.tool_call_delta) -> d.index) deltas in
+    Alcotest.(check (list int)) "unique ascending indices"
+      [0; 1; 2] indices;
+    let ids = List.filter_map
+      (fun (d : Llaml.Types.tool_call_delta) -> d.id) deltas in
+    Alcotest.(check (list string)) "distinct ids preserved"
+      ["call_a"; "call_b"; "call_c"] ids;
+    let args = List.filter_map
+      (fun (d : Llaml.Types.tool_call_delta) -> d.arguments) deltas in
+    Alcotest.(check int) "three arg strings" 3 (List.length args);
+    Alcotest.(check bool) "first args contain a.ml" true
+      (contains "a.ml" (List.nth args 0));
+    Alcotest.(check bool) "second args contain b.ml" true
+      (contains "b.ml" (List.nth args 1));
+    Alcotest.(check bool) "third args contain c.ml" true
+      (contains "c.ml" (List.nth args 2))
+
+let test_gemini_decode_part_reads_opaque_id () =
+  (* Newer Gemini models (2.5+, 3.x-preview) emit an opaque
+     [id] per functionCall. The codec should round-trip it. *)
+  let resp_json = `Assoc [
+    ("candidates", `List [
+      `Assoc [
+        ("content", `Assoc [
+          ("parts", `List [
+            `Assoc [
+              ("functionCall", `Assoc [
+                ("name", `String "some_tool");
+                ("args", `Assoc [("k", `String "v")]);
+                ("id", `String "xvg3g7sk")
+              ])
+            ]
+          ])
+        ]);
+        ("finishReason", `String "STOP")
+      ]
+    ])
+  ] in
+  match Llaml.Gemini_codec.decode_response resp_json with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok resp ->
+    (match resp.Llaml.Types.choices with
+     | [] -> Alcotest.fail "expected a choice"
+     | c :: _ ->
+       (match c.Llaml.Types.message.content with
+        | [Llaml.Types.Tool_use { id; _ }] ->
+          Alcotest.(check string) "opaque id round-tripped"
+            "xvg3g7sk" id
+        | _ -> Alcotest.fail "expected a single Tool_use block"))
+
+let test_gemini_decode_part_falls_back_to_name_when_id_missing () =
+  (* Older Gemini models omit [id]. Fallback to name so
+     tool_result round-trip matching by name still works. *)
+  let resp_json = `Assoc [
+    ("candidates", `List [
+      `Assoc [
+        ("content", `Assoc [
+          ("parts", `List [
+            `Assoc [
+              ("functionCall", `Assoc [
+                ("name", `String "some_tool");
+                ("args", `Assoc [])
+              ])
+            ]
+          ])
+        ]);
+        ("finishReason", `String "STOP")
+      ]
+    ])
+  ] in
+  match Llaml.Gemini_codec.decode_response resp_json with
+  | Error e -> Alcotest.failf "error: %s" e.Llaml.Types.message
+  | Ok resp ->
+    (match resp.Llaml.Types.choices with
+     | [] -> Alcotest.fail "expected a choice"
+     | c :: _ ->
+       (match c.Llaml.Types.message.content with
+        | [Llaml.Types.Tool_use { id; name; _ }] ->
+          Alcotest.(check string) "id falls back to name"
+            "some_tool" id;
+          Alcotest.(check string) "name preserved"
+            "some_tool" name
+        | _ -> Alcotest.fail "expected a single Tool_use block"))
+
 let test_gemini_tool_name_sanitization () =
   (* LMI tool names use ':' as a namespace separator. Gemini
      rejects function names that aren't [a-zA-Z0-9_-], so the
@@ -785,5 +918,11 @@ let () =
       Alcotest.test_case "anthropic top_k" `Quick test_anthropic_top_k;
       Alcotest.test_case "openai response_format json_object" `Quick test_openai_response_format_json_object;
       Alcotest.test_case "gemini tool name sanitization" `Quick test_gemini_tool_name_sanitization;
+      Alcotest.test_case "gemini decode chunk multiple tool calls have distinct indices" `Quick
+        test_gemini_decode_chunk_multiple_tool_calls;
+      Alcotest.test_case "gemini decode part reads opaque id" `Quick
+        test_gemini_decode_part_reads_opaque_id;
+      Alcotest.test_case "gemini decode part falls back to name when id missing" `Quick
+        test_gemini_decode_part_falls_back_to_name_when_id_missing;
     ];
   ]
