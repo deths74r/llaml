@@ -256,7 +256,8 @@ let decode_error ~status j : Types.error =
   let kind : Types.error_kind = match status with
     | 401             -> Types.Auth_error
     | 404             -> Types.Not_found
-    | 429             -> Types.Rate_limit { retry_after = None }
+    | 429             ->
+      Types.Rate_limit { retry_after = Types.retry_after_from_message msg }
     | 400             -> Types.Invalid_request msg
     | n when n >= 500 -> Types.Server_error n
     | _               -> Types.Invalid_request msg
