@@ -6,7 +6,7 @@
     - HTTP execution (via an injectable [Http] backend — testable)
     - SSE stream parsing (via the provider's [decode_chunk])
     - Error mapping
-    - Retry on rate-limit (exponential backoff, respecting Retry-After) *)
+    - Retry on rate-limit (jittered exponential backoff, respecting Retry-After) *)
 
 (** {1 HTTP backend abstraction}
 
@@ -71,14 +71,22 @@ module Make (P : Provider.S) (H : Http) : sig
     ?base_url:Uri.t ->
     ?max_retries:int ->
     ?timeout_s:float ->
+    ?transient_only:bool ->
     H.t ->
     t
   (** [create ~auth http] constructs a client for provider [P].
 
       - [base_url] overrides [P.endpoint] — useful for pointing at a local
         proxy or the litellm proxy itself.
-      - [max_retries] defaults to 2; retries on [Rate_limit] and [Server_error].
-      - [timeout_s] defaults to 600.0 (10 min — long for streaming). *)
+      - [max_retries] defaults to 2; retries use jittered exponential
+        backoff (0.8–1.2 multiplier) honoring any [Retry-After] header
+        from the server.
+      - [timeout_s] defaults to 600.0 (10 min — long for streaming).
+      - [transient_only] defaults to [false]. When [true], the retry
+        set narrows to [Rate_limit] and [Server_error] — [Network_error]
+        fails fast. Use for background daemons that should surface
+        connectivity loss immediately rather than burn the retry
+        budget on a dead network. *)
 
   val complete :
     t ->

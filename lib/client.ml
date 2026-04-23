@@ -1,5 +1,11 @@
 (** HTTP client functor — wires together a Provider and an Http backend. *)
 
+(** Seed the PRNG once at module load so retry jitter (below) is
+    non-deterministic across processes. [Random.self_init] reads from
+    [/dev/urandom] on Unix; good enough for anti-thundering-herd —
+    we don't need cryptographic strength for a 0.8–1.2 multiplier. *)
+let () = Random.self_init ()
+
 module type Http = sig
   type t
   val get :
@@ -20,15 +26,21 @@ end
 module Make (P : Provider.S) (H : Http) = struct
 
   type t = {
-    auth        : Auth.t;
-    base_url    : Uri.t option;
-    max_retries : int;
-    timeout_s   : float;
-    http        : H.t;
+    auth           : Auth.t;
+    base_url       : Uri.t option;
+    max_retries    : int;
+    timeout_s      : float;
+    transient_only : bool;
+      (** When [true], the retry loop narrows to [Rate_limit] and
+          [Server_error] only — network errors fail fast. Useful for
+          background daemons that should surface connectivity loss
+          immediately rather than burn the retry budget. *)
+    http           : H.t;
   }
 
-  let create ~auth ?base_url ?(max_retries = 2) ?(timeout_s = 600.0) http =
-    { auth; base_url; max_retries; timeout_s; http }
+  let create ~auth ?base_url ?(max_retries = 2) ?(timeout_s = 600.0)
+      ?(transient_only = false) http =
+    { auth; base_url; max_retries; timeout_s; transient_only; http }
 
   (** Sign request for Bedrock if needed. *)
   let maybe_sign_bedrock (auth : Auth.t) url headers body =
@@ -85,16 +97,27 @@ module Make (P : Provider.S) (H : Http) = struct
            Types.kind = Types.Rate_limit { retry_after = Some hint } })
     | _ -> err
 
-  (** Retry logic: exponential backoff with Retry-After header support.
+  (** Jittered exponential backoff. Returns [base * 2^attempt] times a
+      random factor in [0.8, 1.2]. Jitter prevents thundering-herd when
+      many clients hit the same rate limit simultaneously and otherwise
+      retry in lockstep. *)
+  let jittered_backoff (attempt : int) : float =
+    let base = Float.of_int (1 lsl attempt) in
+    let factor = 0.8 +. Random.float 0.4 in
+    base *. factor
+
+  (** Retry logic: jittered exponential backoff with Retry-After header
+      support. [~transient_only:true] narrows the retry set to
+      [Rate_limit] and [Server_error] only (skips [Network_error]).
       Uses [H.sleep] on the HTTP backend so eio fibers yield instead of
-      blocking the domain with [Unix.sleepf]. *)
-  let with_retry http max_retries f =
+      blocking the domain. *)
+  let with_retry ?(transient_only = false) http max_retries f =
     let rec loop attempt =
       match f () with
       | Ok v -> Ok v
       | Error ({ Types.kind = Types.Rate_limit { retry_after }; _ } as _e)
         when attempt < max_retries ->
-        let backoff = Float.of_int (1 lsl attempt) in
+        let backoff = jittered_backoff attempt in
         let delay = match retry_after with
           | Some hint -> Float.max hint backoff
           | None      -> backoff
@@ -103,7 +126,11 @@ module Make (P : Provider.S) (H : Http) = struct
         loop (attempt + 1)
       | Error ({ Types.kind = Types.Server_error _; _ } as _e)
         when attempt < max_retries ->
-        H.sleep http (Float.of_int (1 lsl attempt));
+        H.sleep http (jittered_backoff attempt);
+        loop (attempt + 1)
+      | Error ({ Types.kind = Types.Network_error _; _ } as _e)
+        when attempt < max_retries && not transient_only ->
+        H.sleep http (jittered_backoff attempt);
         loop (attempt + 1)
       | Error e -> Error e
     in
@@ -117,7 +144,7 @@ module Make (P : Provider.S) (H : Http) = struct
         Uri.with_path base path
       | None -> P.endpoint req
     in
-    with_retry t.http t.max_retries (fun () ->
+    with_retry ~transient_only:t.transient_only t.http t.max_retries (fun () ->
       match P.encode_request req with
       | Error e -> Error e
       | Ok body_json ->
@@ -272,7 +299,7 @@ module Make (P : Provider.S) (H : Http) = struct
           let base = Uri.with_path completion_url "" in
           Uri.with_path base "/v1/embeddings"
       in
-        with_retry t.http t.max_retries (fun () ->
+        with_retry ~transient_only:t.transient_only t.http t.max_retries (fun () ->
         match P.encode_embed_request req with
         | Error e -> Error e
         | Ok body_json ->
