@@ -275,3 +275,17 @@ type error = {
 }
 
 val pp_error : Format.formatter -> error -> unit
+
+val telemetry_type : error_kind -> string
+(** A short stable category string for metrics / debug logs. One of
+    ["auth" | "rate_limit" | "invalid_request" | "not_found" |
+    "server" | "timeout" | "network" | "unsupported"]. *)
+
+val retry_after_from_message : string -> float option
+(** Best-effort extraction of a retry-after hint from a provider's
+    human-readable error message. Handles the three phrasings seen
+    in the wild ("reset after Ns", "retry in Nms", "retry after Ns")
+    with units of [ms] or [s]. Returns seconds on success. Used by
+    the OpenAI/Anthropic/Gemini codecs when the server doesn't send
+    a [Retry-After] header but does mention the delay in the
+    message body. *)

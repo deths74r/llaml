@@ -220,3 +220,34 @@ let pp_error fmt e =
     | Unsupported feat -> Printf.sprintf "Unsupported(%s)" feat
   in
   Format.fprintf fmt "[%s] %s: %s" e.provider kind_str e.message
+
+let telemetry_type = function
+  | Auth_error        -> "auth"
+  | Rate_limit _      -> "rate_limit"
+  | Invalid_request _ -> "invalid_request"
+  | Not_found         -> "not_found"
+  | Server_error _    -> "server"
+  | Timeout           -> "timeout"
+  | Network_error _   -> "network"
+  | Unsupported _     -> "unsupported"
+
+let retry_after_from_message (msg : string) : float option =
+  let parse_duration n unit_ =
+    match float_of_string_opt n, unit_ with
+    | Some v, "ms" -> Some (v /. 1000.0)
+    | Some v, "s"  -> Some v
+    | _            -> None
+  in
+  let search pattern =
+    let re = Str.regexp_case_fold pattern in
+    try
+      ignore (Str.search_forward re msg 0);
+      parse_duration (Str.matched_group 1 msg) (Str.matched_group 2 msg)
+    with Not_found -> None
+  in
+  match search "reset after \\([0-9.]+\\)\\(ms\\|s\\)" with
+  | Some _ as v -> v
+  | None ->
+    match search "retry in \\([0-9.]+\\)\\(ms\\|s\\)" with
+    | Some _ as v -> v
+    | None -> search "retry after \\([0-9.]+\\)\\(ms\\|s\\)"
