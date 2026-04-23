@@ -72,6 +72,7 @@ module Make (P : Provider.S) (H : Http) : sig
     ?max_retries:int ->
     ?timeout_s:float ->
     ?transient_only:bool ->
+    ?session_id:string ->
     H.t ->
     t
   (** [create ~auth http] constructs a client for provider [P].
@@ -86,7 +87,11 @@ module Make (P : Provider.S) (H : Http) : sig
         set narrows to [Rate_limit] and [Server_error] — [Network_error]
         fails fast. Use for background daemons that should surface
         connectivity loss immediately rather than burn the retry
-        budget on a dead network. *)
+        budget on a dead network.
+      - [session_id] is injected as [x-lmi-session-id] on every
+        outbound request when set. Gives provider logs and our own
+        debug logs a stable correlation key per consumer session.
+        Optional. *)
 
   val complete :
     t ->

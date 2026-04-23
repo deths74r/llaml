@@ -35,12 +35,28 @@ module Make (P : Provider.S) (H : Http) = struct
           [Server_error] only — network errors fail fast. Useful for
           background daemons that should surface connectivity loss
           immediately rather than burn the retry budget. *)
+    session_id     : string option;
+      (** Injected as [x-lmi-session-id] on every outbound request.
+          Gives provider logs + our own debug logs a stable key to
+          correlate all traffic for one consumer session, even across
+          concurrent fibers. Optional because non-LMI consumers of
+          llaml shouldn't have to invent a value. *)
     http           : H.t;
   }
 
   let create ~auth ?base_url ?(max_retries = 2) ?(timeout_s = 600.0)
-      ?(transient_only = false) http =
-    { auth; base_url; max_retries; timeout_s; transient_only; http }
+      ?(transient_only = false) ?session_id http =
+    { auth; base_url; max_retries; timeout_s; transient_only;
+      session_id; http }
+
+  (** Prepend the session-id header to [headers] if one is configured.
+      Used by every send path so the header rides on completions,
+      streams, and embeddings alike. *)
+  let with_session_header (t : t) (headers : (string * string) list)
+      : (string * string) list =
+    match t.session_id with
+    | Some sid -> ("x-lmi-session-id", sid) :: headers
+    | None -> headers
 
   (** Sign request for Bedrock if needed. *)
   let maybe_sign_bedrock (auth : Auth.t) url headers body =
@@ -149,7 +165,7 @@ module Make (P : Provider.S) (H : Http) = struct
       | Error e -> Error e
       | Ok body_json ->
         let body = Yojson.Safe.to_string body_json in
-        let headers = P.headers t.auth req in
+        let headers = with_session_header t (P.headers t.auth req) in
         let headers = maybe_sign_bedrock t.auth url headers body in
         let headers = if List.exists (fun (k, _) -> String.lowercase_ascii k = "content-type") headers
           then headers
@@ -197,7 +213,7 @@ module Make (P : Provider.S) (H : Http) = struct
     | Error e -> Error e
     | Ok body_json ->
       let body = Yojson.Safe.to_string body_json in
-      let headers = P.headers t.auth req in
+      let headers = with_session_header t (P.headers t.auth req) in
       let headers = maybe_sign_bedrock t.auth url headers body in
       let headers = if List.exists (fun (k, _) -> String.lowercase_ascii k = "content-type") headers
         then headers
@@ -306,7 +322,7 @@ module Make (P : Provider.S) (H : Http) = struct
           let body = Yojson.Safe.to_string body_json in
           (* Use a dummy request for headers (only auth matters) *)
           let dummy_req = Types.request ~model:req.model ~messages:[] () in
-          let headers = P.headers t.auth dummy_req in
+          let headers = with_session_header t (P.headers t.auth dummy_req) in
           let headers = if List.exists (fun (k, _) -> String.lowercase_ascii k = "content-type") headers
             then headers
             else ("content-type", "application/json") :: headers
