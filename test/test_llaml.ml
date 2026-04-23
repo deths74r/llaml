@@ -34,7 +34,7 @@ let test_openai_encode_message_simple () =
 let test_openai_encode_message_assistant_tool_use () =
   let msg : Llaml.Types.message = {
     role = Llaml.Types.Assistant;
-    content = [Llaml.Types.Tool_use { id = "call_1"; name = "my_tool"; input = `Assoc [("x", `Int 1)]; thought_signature = None }];
+    content = [Llaml.Types.Tool_use { id = "call_1"; name = "my_tool"; input = `Assoc [("x", `Int 1)]; thought_signature = None; metadata = None }];
     cache = None;
   } in
   let j = Llaml.Openai_codec.encode_message msg in

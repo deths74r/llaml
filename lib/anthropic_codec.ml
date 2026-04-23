@@ -232,7 +232,7 @@ let decode_response j =
       let id    = member "id" block |> to_string_opt |> Option.value ~default:"" in
       let name  = member "name" block |> to_string_opt |> Option.value ~default:"" in
       let input = member "input" block in
-      Some (Types.Tool_use { id; name; input; thought_signature = None })
+      Some (Types.Tool_use { id; name; input; thought_signature = None; metadata = None })
     | _ -> None
   ) content_blocks in
   let tool_calls = List.filter_map (function

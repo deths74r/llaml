@@ -199,7 +199,7 @@ let decode_part j =
          | _ -> name
        in
        let thought_signature = member "thoughtSignature" j |> to_string_opt in
-       Some (Types.Tool_use { id; name; input = args; thought_signature }))
+       Some (Types.Tool_use { id; name; input = args; thought_signature; metadata = None }))
 
 let decode_response j =
   let usage      = match member "usageMetadata" j with
@@ -281,7 +281,7 @@ let decode_chunk () (ev : Types.sse_event) =
              in
              let tc_deltas = List.mapi (fun i tu ->
                match tu with
-               | Types.Tool_use { id; name; input; thought_signature } ->
+               | Types.Tool_use { id; name; input; thought_signature; _ } ->
                  { Types.index = i; id = Some id; name = Some name;
                    arguments = Some (Yojson.Safe.to_string input);
                    thought_signature }
