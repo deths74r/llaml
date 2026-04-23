@@ -11,8 +11,15 @@ a canonical-type LLM client for an ecosystem that didn't have one yet.
 
 ## Status
 
-Pre-alpha, working. 43 tests green, builds clean on OCaml 5.2. Used as
+Pre-alpha, working. 47 tests green, builds clean on OCaml 5.2. Used as
 the provider layer for [LMI](https://github.com/deths74r/lmi).
+
+v0.2.0 (2026-04-23) — jittered backoff + `?transient_only`, Retry-After
+body extraction, Gemini `x-goog-api-key` header (P0 security fix —
+keys now travel in the header, not the URL query string), model
+aliases (`sonnet`, `flash`, `gpt5`, …), `?session_id` on
+`Llaml_eio.make` / `Client.create` for `x-lmi-session-id` correlation.
+See [`CHANGELOG.md`](CHANGELOG.md) for detail.
 
 ## Features
 
@@ -295,8 +302,9 @@ bin/           — live examples (need an API key)
   gemini_modes.ml   exercise temperature/thinking/JSON/tools/multi-turn
 
 test/          — alcotest unit tests
-  test_llaml.ml     43 tests: codecs, json_merge, reasoning, cache,
-                    knobs, SSE, SigV4, Bedrock event-stream
+  test_llaml.ml     47 tests: codecs, json_merge, reasoning, cache,
+                    knobs, SSE, SigV4, Bedrock event-stream,
+                    aliases, retry_after_from_message
 ```
 
 ## License
