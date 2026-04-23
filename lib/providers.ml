@@ -248,9 +248,39 @@ module Mistral = Provider.Make_openai_compat (struct
   let supports_embeddings = true
 end)
 
+(** {1 Model aliases}
+
+    Short, memorable names that expand to canonical model ids before
+    any prefix-based routing happens. Aliases are additive: users
+    who already type canonical names ([gpt-5], [claude-opus-4-6])
+    continue to work as-is. *)
+let aliases : (string * string) list = [
+  (* Anthropic *)
+  "opus",      "claude-opus-4-6";
+  "sonnet",    "claude-sonnet-4-6";
+  "haiku",     "claude-haiku-4-5";
+  (* Gemini *)
+  "flash",     "gemini-2.5-flash";
+  "pro",       "gemini-2.5-pro";
+  (* OpenAI *)
+  "gpt5",      "gpt-5";
+  "gpt5-mini", "gpt-5-mini";
+  "gpt5-nano", "gpt-5-nano";
+  "gpt4o",     "gpt-4o";
+  "gpt4o-mini","gpt-4o-mini";
+]
+
+(** Resolve a possibly-aliased model name to its canonical form.
+    Unknown names pass through unchanged. *)
+let resolve_alias (model : string) : string =
+  match List.assoc_opt model aliases with
+  | Some canonical -> canonical
+  | None -> model
+
 (** {1 Prefix lookup table} *)
 
-let by_prefix model =
+let by_prefix raw_model =
+  let model = resolve_alias raw_model in
   let has_prefix p = String.length model >= String.length p &&
     String.sub model 0 (String.length p) = p in
   (* Bedrock prefixes — check before others *)

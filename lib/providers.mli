@@ -37,6 +37,16 @@ module Mistral    : Provider.S
 
 (** {1 Convenience} *)
 
+val aliases : (string * string) list
+(** Short-name → canonical-id mapping. Aliases are additive: users
+    who already type canonical names ([gpt-5], [claude-opus-4-6])
+    continue to work as-is; aliases let ["sonnet"] resolve to
+    ["claude-sonnet-4-6"] without having to type the full suffix. *)
+
+val resolve_alias : string -> string
+(** Resolve a possibly-aliased model name to its canonical form.
+    Unknown names pass through unchanged. *)
+
 val by_prefix : string -> (module Provider.S) option
 (** Look up a provider by its model name prefix.
     [by_prefix "gpt-4o"]         → [Some (module Openai)]
