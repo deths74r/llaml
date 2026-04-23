@@ -199,7 +199,7 @@ let decode_part j =
          | _ -> name
        in
        let thought_signature = member "thoughtSignature" j |> to_string_opt in
-       Some (Types.Tool_use { id; name; input = args; thought_signature; metadata = None }))
+       Some (Types.Tool_use { id; name; input = args; thought_signature }))
 
 let decode_response j =
   let usage      = match member "usageMetadata" j with

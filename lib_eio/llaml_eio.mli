@@ -67,6 +67,8 @@ val make :
   ?base_url:Uri.t ->
   ?max_retries:int ->
   ?timeout_s:float ->
+  ?transient_only:bool ->
+  ?session_id:string ->
   provider:(module Llaml.Provider.S) ->
   auth:Llaml.Auth.t ->
   unit -> client
@@ -77,8 +79,12 @@ val make :
     - instantiates [Llaml.Client.Make(P)(Http_eio)]
     - closes over the resulting client in each record field
 
-    [base_url], [max_retries], and [timeout_s] pass through
-    to [Client.Make.create]. *)
+    [base_url], [max_retries], [timeout_s], [transient_only],
+    and [session_id] pass through to [Client.Make.create].
+    [session_id] adds an [x-lmi-session-id] header to every
+    outbound request for log correlation; [transient_only]
+    narrows the retry loop to 429 and 5xx so network errors
+    surface immediately. *)
 
 (** {1 Auto — model-string to client}
 

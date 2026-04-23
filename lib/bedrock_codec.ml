@@ -104,7 +104,7 @@ let decode_content_block j =
        let id    = member "toolUseId" tu |> to_string_opt |> Option.value ~default:"" in
        let name  = member "name" tu |> to_string_opt |> Option.value ~default:"" in
        let input = member "input" tu in
-       Some (Types.Tool_use { id; name; input; thought_signature = None; metadata = None }))
+       Some (Types.Tool_use { id; name; input; thought_signature = None }))
 
 let decode_response j =
   let output    = member "output" j in

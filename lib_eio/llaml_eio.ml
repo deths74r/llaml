@@ -17,12 +17,14 @@ type client = {
 
 let make ~env ~sw ?authenticator
     ?base_url ?(max_retries = 2) ?(timeout_s = 600.0)
+    ?(transient_only = false) ?session_id
     ~provider ~auth () =
   let http = Http_eio.make ~env ~sw ?authenticator () in
   let (module P : Llaml.Provider.S) = provider in
   let module C = Llaml.Client.Make (P) (Http_eio) in
   let c =
-    C.create ~auth ?base_url ~max_retries ~timeout_s http
+    C.create ~auth ?base_url ~max_retries ~timeout_s
+      ~transient_only ?session_id http
   in
   let do_list_models () =
     match Llaml.Providers.models_endpoint P.id with

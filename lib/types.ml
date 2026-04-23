@@ -12,8 +12,7 @@ type content =
   | Text        of string
   | Image       of { url : string; detail : [ `Low | `High | `Auto ] option }
   | Tool_use    of { id : string; name : string; input : Yojson.Safe.t;
-                     thought_signature : string option;
-                     metadata : Yojson.Safe.t option }
+                     thought_signature : string option }
   | Tool_result of { id : string; content : string; is_error : bool }
 
 type cache_control =
@@ -221,16 +220,6 @@ let pp_error fmt e =
     | Unsupported feat -> Printf.sprintf "Unsupported(%s)" feat
   in
   Format.fprintf fmt "[%s] %s: %s" e.provider kind_str e.message
-
-let telemetry_type = function
-  | Auth_error        -> "auth"
-  | Rate_limit _      -> "rate_limit"
-  | Invalid_request _ -> "invalid_request"
-  | Not_found         -> "not_found"
-  | Server_error _    -> "server"
-  | Timeout           -> "timeout"
-  | Network_error _   -> "network"
-  | Unsupported _     -> "unsupported"
 
 let retry_after_from_message (msg : string) : float option =
   let parse_duration n unit_ =

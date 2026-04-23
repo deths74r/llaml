@@ -19,14 +19,6 @@ type content =
       name              : string;
       input             : Yojson.Safe.t;
       thought_signature : string option;
-      metadata          : Yojson.Safe.t option;
-        (** Free-form LMI-controlled provenance hook. NOT sent to the
-            provider — every codec's [Tool_use] destructure uses
-            [{ _ }] so the field is stripped at encode time. Use it
-            to thread issuing-agent / fiber / session metadata with
-            the tool call so a downstream dispatcher (LMI's tool
-            harness, an MCP client) can route or audit without
-            schema pollution. *)
     }
   | Tool_result of { id : string; content : string; is_error : bool }
 
@@ -287,11 +279,6 @@ type error = {
 }
 
 val pp_error : Format.formatter -> error -> unit
-
-val telemetry_type : error_kind -> string
-(** A short stable category string for metrics / debug logs. One of
-    ["auth" | "rate_limit" | "invalid_request" | "not_found" |
-    "server" | "timeout" | "network" | "unsupported"]. *)
 
 val retry_after_from_message : string -> float option
 (** Best-effort extraction of a retry-after hint from a provider's
