@@ -30,13 +30,6 @@ module Make (P : Provider.S) (H : Http) = struct
   let create ~auth ?base_url ?(max_retries = 2) ?(timeout_s = 600.0) http =
     { auth; base_url; max_retries; timeout_s; http }
 
-  (** Add Gemini API key to URL query params when provider is Gemini. *)
-  let maybe_add_api_key_param (auth : Auth.t) url =
-    match auth with
-    | Auth.Api_key k when P.id = "gemini" ->
-      Uri.add_query_param' url ("key", k)
-    | _ -> url
-
   (** Sign request for Bedrock if needed. *)
   let maybe_sign_bedrock (auth : Auth.t) url headers body =
     match auth with
@@ -124,7 +117,6 @@ module Make (P : Provider.S) (H : Http) = struct
         Uri.with_path base path
       | None -> P.endpoint req
     in
-    let url = maybe_add_api_key_param t.auth url in
     with_retry t.http t.max_retries (fun () ->
       match P.encode_request req with
       | Error e -> Error e
@@ -174,7 +166,6 @@ module Make (P : Provider.S) (H : Http) = struct
         Uri.with_path base path
       | None -> P.endpoint req
     in
-    let url = maybe_add_api_key_param t.auth url in
     match P.encode_request req with
     | Error e -> Error e
     | Ok body_json ->
@@ -281,8 +272,7 @@ module Make (P : Provider.S) (H : Http) = struct
           let base = Uri.with_path completion_url "" in
           Uri.with_path base "/v1/embeddings"
       in
-      let url = maybe_add_api_key_param t.auth url in
-      with_retry t.http t.max_retries (fun () ->
+        with_retry t.http t.max_retries (fun () ->
         match P.encode_embed_request req with
         | Error e -> Error e
         | Ok body_json ->

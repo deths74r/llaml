@@ -92,15 +92,15 @@ module Gemini : Provider.S = struct
     Gemini_codec.endpoint_for req.model ~streaming:req.stream
 
   let headers (auth : Auth.t) _req =
+    let base = [("content-type", "application/json")] in
     match auth with
-    | Auth.Api_key _ -> [("content-type", "application/json")]
-    | Auth.Custom hs -> hs
-    | _ -> [("content-type", "application/json")]
-
-  (** Gemini auth is via query param, not headers. We handle URL modification
-      in endpoint by adding the key. Since [endpoint] only receives the request
-      and not the auth, callers must add ?key=... themselves. This is handled
-      in Client by checking provider id. *)
+    | Auth.Api_key k -> ("x-goog-api-key", k) :: base
+    | Auth.Custom hs -> hs @ base
+    | _ -> base
+  (** Gemini API keys ride in the [x-goog-api-key] header. Historically
+      this provider put the key in the URL query string (?key=...), but
+      URLs leak into access logs and exception traces whereas headers
+      are redacted by most HTTP clients. *)
 
   let encode_request = Gemini_codec.encode_request
   let decode_response = Gemini_codec.decode_response
